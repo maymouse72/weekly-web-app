@@ -44,11 +44,70 @@ let members = saved.members
     })
   : names.map((m) => ({ ...m, position: m.position || '팀원', active: true }));
 let reports = saved.reports || Object.fromEntries(Object.entries(sampleReports).map(([name, data]) => [name, { ...data, submitted: true, week: CURRENT_WEEK.start }]));
+let previousReports = {};
+let supabaseConfig = null;
+let connectionError = '';
+const localPreview = ['localhost', '127.0.0.1'].includes(location.hostname);
+let dataLoading = !localPreview;
 let state = { page: 'dashboard', memberFilter: 'all', query: '', currentMemberName: localStorage.getItem('workweek-current-member') || '', ...(saved.ui || {}) };
 const pageTitles = { dashboard: '대시보드', report: '주간보고 작성', team: '팀 현황', admin: '취합 및 내보내기', settings: '알림 설정' };
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
 const escapeHtml = (v = '') => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+async function dbRequest(table, query = '', options = {}) {
+  if (!supabaseConfig) throw new Error('공유 데이터베이스가 연결되지 않았습니다.');
+  const headers = { apikey: supabaseConfig.publishableKey, 'Content-Type': 'application/json' };
+  if (options.prefer) headers.Prefer = options.prefer;
+  const response = await fetch(`${supabaseConfig.supabaseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`, {
+    method: options.method || 'GET', headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) throw new Error(data?.message || data?.error || `Supabase 요청 오류 (${response.status})`);
+  return data;
+}
+function mapMember(row) {
+  return { id: row.id, name: row.name, role: row.role, job: row.job, position: row.position || '팀원', type: row.work_type,
+    active: row.status === 'ACTIVE', isAdmin: row.is_admin, client: row.project_client || '', project: row.project_name || '',
+    start: row.assignment_start || '', end: row.assignment_end || '', note: row.note || '' };
+}
+function mapReport(row) {
+  return { id: row.id, task: row.task_content || '', next: row.next_week_plan || '', leave: row.leave_note || '',
+    category: row.work_category || '', submitted: row.submitted, week: row.week_start,
+    time: row.submitted_at ? new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(row.submitted_at)) : '' };
+}
+async function initializeRemoteData() {
+  try {
+    const configResponse = await fetch('/api/config', { cache: 'no-store' });
+    if (!configResponse.ok) throw new Error('Vercel 환경 변수 또는 API 설정을 확인해 주세요.');
+    supabaseConfig = await configResponse.json();
+    const previousStartDate = new Date(weekStart); previousStartDate.setDate(previousStartDate.getDate() - 7);
+    const previousStart = toLocalISO(previousStartDate);
+    const memberQuery = new URLSearchParams({ select: '*', status: 'eq.ACTIVE', order: 'name.asc' });
+    const reportQuery = new URLSearchParams({ select: '*', week_start: `in.(${CURRENT_WEEK.start},${previousStart})` });
+    const [memberRows, reportRows] = await Promise.all([
+      dbRequest('members', memberQuery.toString()), dbRequest('weekly_reports', reportQuery.toString()),
+    ]);
+    members = memberRows.map(mapMember);
+    reports = {}; previousReports = {};
+    const memberNameById = new Map(members.map((member) => [member.id, member.name]));
+    reportRows.forEach((row) => {
+      const name = memberNameById.get(row.member_id); if (!name) return;
+      const report = mapReport(row);
+      if (row.week_start === CURRENT_WEEK.start) reports[name] = report;
+      else previousReports[name] = report;
+    });
+    connectionError = ''; dataLoading = false;
+    save(); render();
+  } catch (error) {
+    console.error('공유 데이터 연결 실패:', error);
+    if (localPreview) { dataLoading = false; return; }
+    dataLoading = false;
+    connectionError = error.message || '공유 데이터베이스에 연결하지 못했습니다.';
+    render();
+  }
+}
 const initials = (name) => name.slice(-1);
 const office = () => members.filter((m) => m.active && m.type === 'office');
 const projectStaff = () => members.filter((m) => m.active && m.type === 'project');
@@ -109,15 +168,27 @@ function adminPage() {
 }
 function settingsPage() {
   return `${heading('PREFERENCES', '알림 설정', '마감 알림을 받을 시간과 방법을 설정해요.')}
-    <div class="settings-grid"><article class="settings-card"><h3>주간보고 마감 알림</h3><p>목요일 오전에 주간보고 작성 알림을 받아요.</p><div class="setting-row"><div><strong>브라우저 알림</strong><small>이 기기에서 알림 표시</small></div><input class="toggle" type="checkbox" id="pushToggle" ${localStorage.getItem('workweek-notify') === 'on' ? 'checked' : ''} /></div><div class="setting-row"><div><strong>알림 시각</strong><small>목요일 오전 기준</small></div><input class="text-input" type="time" id="notifyTime" value="${localStorage.getItem('workweek-time') || '09:00'}" style="width:112px;padding:7px" /></div><div class="setting-row"><div><strong>주간보고 마감</strong><small>팀 공통 마감 시간</small></div><span class="meta-chip">목요일 오전 11:00</span></div><button class="button button-primary" data-action="save-settings" style="margin-top:12px">설정 저장</button></article><article class="settings-card"><h3>앱 설치 및 데이터</h3><p>홈 화면에 추가하면 앱처럼 빠르게 열 수 있어요.</p><div class="setting-row"><div><strong>홈 화면에 추가</strong><small>브라우저 메뉴에서 “앱 설치” 또는 “홈 화면에 추가” 선택</small></div><span class="stat-icon icon-blue">＋</span></div><div class="setting-row"><div><strong>저장 위치</strong><small>현재 브라우저와 기기에 보고 내용 저장</small></div><span class="badge badge-neutral">이 기기</span></div><div class="aside-tip" style="margin-top:13px">여러 팀원이 함께 사용하고 메일·푸시 알림을 받으려면 계정 로그인, 서버 저장소, 발송 서비스 연결이 추가로 필요해요. 현재 미리보기에서는 브라우저 로컬 저장과 이 기기 알림만 지원합니다.</div></article></div>`;
+    <div class="settings-grid"><article class="settings-card"><h3>주간보고 마감 알림</h3><p>목요일 오전에 주간보고 작성 알림을 받아요.</p><div class="setting-row"><div><strong>브라우저 알림</strong><small>이 기기에서 알림 표시 (앱이 실행 중일 때)</small></div><input class="toggle" type="checkbox" id="pushToggle" ${localStorage.getItem('workweek-notify') === 'on' ? 'checked' : ''} /></div><div class="setting-row"><div><strong>알림 시각</strong><small>목요일 오전 기준</small></div><input class="text-input" type="time" id="notifyTime" value="${localStorage.getItem('workweek-time') || '09:00'}" style="width:112px;padding:7px" /></div><div class="setting-row"><div><strong>주간보고 마감</strong><small>팀 공통 마감 시간</small></div><span class="meta-chip">목요일 오전 11:00</span></div><button class="button button-primary" data-action="save-settings" style="margin-top:12px">설정 저장</button></article><article class="settings-card"><h3>앱 설치 및 데이터</h3><p>홈 화면에 추가하면 앱처럼 빠르게 열 수 있어요.</p><div class="setting-row"><div><strong>홈 화면에 추가</strong><small>브라우저 메뉴에서 “앱 설치” 또는 “홈 화면에 추가” 선택</small></div><span class="stat-icon icon-blue">＋</span></div><div class="setting-row"><div><strong>저장 위치</strong><small>${supabaseConfig ? '팀원이 함께 사용하는 Supabase 공유 데이터베이스' : '현재 브라우저와 기기의 로컬 저장소'}</small></div><span class="badge badge-neutral">${supabaseConfig ? '공유 저장' : '이 기기'}</span></div><div class="aside-tip" style="margin-top:13px">${supabaseConfig ? '보고서와 팀원 정보는 Supabase에 공유 저장됩니다. 앱을 닫아도 받는 PWA 푸시 알림은 다음 단계에서 연결해야 합니다.' : '로컬 미리보기에서는 브라우저 저장소와 이 기기 알림을 사용합니다.'}</div></article></div>`;
 }
 function render() {
+  if (dataLoading) {
+    $('#sidebar').classList.add('login-locked');
+    $('#crumbTitle').textContent = '공유 데이터 연결';
+    $('#pageContent').innerHTML = '<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><h1>팀 정보를 불러오는 중입니다</h1><p>잠시만 기다려 주세요.</p></div></div>';
+    return;
+  }
+  if (connectionError) {
+    $('#sidebar').classList.add('login-locked');
+    $('#crumbTitle').textContent = '공유 데이터 연결';
+    $('#pageContent').innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><div class="eyebrow" style="margin-top:20px">SI사업2팀 · WEEKLY REPORT</div><h1>데이터 연결을 확인해 주세요</h1><p>${escapeHtml(connectionError)}</p><button class="button button-primary" style="width:100%;margin-top:13px" onclick="location.reload()">다시 시도</button></div></div>`;
+    return;
+  }
   if (!state.currentMemberName || !members.some((m) => m.active && m.name === state.currentMemberName)) {
     state.currentMemberName = '';
     $('#sidebar').classList.add('login-locked');
     $('#crumbTitle').textContent = '이름 로그인';
     $('#currentProfile').innerHTML = '<span class="avatar avatar-blue">?</span><div><strong>로그인 전</strong><small>이름을 선택해 주세요</small></div>';
-    $('#pageContent').innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><div class="eyebrow" style="margin-top:20px">SI사업2팀 · WEEKLY REPORT</div><h1>이름을 선택해 주세요</h1><p>별도 계정 없이 팀원 이름을 선택해 업무공간에 입장합니다.</p><form id="nameLoginForm"><label class="form-label" for="nameLoginSelect">팀원 이름</label><select class="select-input" id="nameLoginSelect" required><option value="">이름 선택</option>${members.filter((m) => m.active).map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${m.position === '팀장' ? '팀장' : m.type === 'office' ? '본사' : '프로젝트'}</option>`).join('')}</select><button class="button button-primary" style="width:100%;margin-top:13px" type="submit">업무공간 입장 <span>→</span></button></form><small class="login-note">이름 선택은 계정 인증이 아니므로, 현재 미리보기에서는 개인 신원을 확인하지 않습니다.</small></div></div>`;
+    $('#pageContent').innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><div class="eyebrow" style="margin-top:20px">SI사업2팀 · WEEKLY REPORT</div><h1>이름을 선택해 주세요</h1><p>별도 계정 없이 팀원 이름을 선택해 업무공간에 입장합니다.</p><form id="nameLoginForm"><label class="form-label" for="nameLoginSelect">팀원 이름</label><select class="select-input" id="nameLoginSelect" required><option value="">이름 선택</option>${members.filter((m) => m.active).map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${m.position === '팀장' ? '팀장' : m.type === 'office' ? '본사' : '프로젝트'}</option>`).join('')}</select><button class="button button-primary" style="width:100%;margin-top:13px" type="submit">업무공간 입장 <span>→</span></button></form><small class="login-note">이름 선택은 본인 확인이 아닙니다. URL을 아는 사람은 다른 이름을 선택할 수 있습니다.</small></div></div>`;
     return;
   }
   $('#sidebar').classList.remove('login-locked');
@@ -133,33 +204,74 @@ function go(page) { state.page = page; if (page !== 'team') state.query = ''; if
 function toast(message) { const node = document.createElement('div'); node.className = 'toast'; node.textContent = message; $('#toastRegion').appendChild(node); setTimeout(() => node.remove(), 3000); }
 function copyLast() {
   const me = members.find((m) => m.name === state.currentMemberName); if (!me) return toast('지난주 보고 내용을 찾지 못했어요.');
-  const previous = reports[me.name] || sampleReports[me.name];
+  const previous = previousReports[me.name] || (localPreview ? sampleReports[me.name] : null);
+  if (!previous) return toast('지난주 보고 내용을 찾지 못했어요.');
   $('#taskInput').value = previous?.task || ''; $('#nextInput').value = previous?.next || '';
   toast('지난주 내용을 가져왔어요. 기간을 확인하고 제출해 주세요.');
 }
-function saveReport(event) {
+async function saveReport(event) {
   event.preventDefault(); const task = $('#taskInput').value.trim();
   if (!task) return toast('금주 업무 내용을 입력해 주세요.');
-  reports[state.currentMemberName] = { task, next: $('#nextInput').value.trim(), leave: $('#leaveInput').value.trim(), submitted: true, week: CURRENT_WEEK.start, time: new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()) };
-  save(); toast('주간보고를 제출했어요.'); render();
+  const member = members.find((item) => item.name === state.currentMemberName);
+  if (!member) return toast('팀원 정보를 다시 확인해 주세요.');
+  const now = new Date();
+  const report = { task, next: $('#nextInput').value.trim(), leave: $('#leaveInput').value.trim(), category: $('#projectInput').value, submitted: true, week: CURRENT_WEEK.start, time: new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(now) };
+  try {
+    if (supabaseConfig) {
+      const query = new URLSearchParams({ on_conflict: 'member_id,week_start' }).toString();
+      const rows = await dbRequest('weekly_reports', query, { method: 'POST', prefer: 'resolution=merge-duplicates,return=representation', body: {
+        member_id: member.id, week_start: CURRENT_WEEK.start, week_end: CURRENT_WEEK.end, work_type_at_submission: member.type,
+        task_content: report.task, next_week_plan: report.next, leave_note: report.leave, work_category: report.category,
+        submitted: true, submitted_at: now.toISOString(), written_by: member.id,
+        copied_from_report_id: previousReports[member.name]?.id || null,
+      } });
+      report.id = rows?.[0]?.id || reports[member.name]?.id;
+    }
+    reports[member.name] = report;
+    save(); toast('주간보고를 제출했어요.'); render();
+  } catch (error) { console.error('주간보고 저장 실패:', error); toast(`제출하지 못했어요: ${error.message}`); }
 }
-function changeMember(name) {
+async function persistMember(member, isNew = false) {
+  if (!supabaseConfig) return;
+  const payload = {
+    name: member.name, role: member.role, job: member.job, position: member.position || '팀원',
+    work_type: member.type, status: member.active ? 'ACTIVE' : 'INACTIVE', is_admin: Boolean(member.isAdmin),
+    project_client: member.client || null, project_name: member.project || null,
+    assignment_start: member.start || null, assignment_end: member.end && /^\d{4}-\d{2}-\d{2}$/.test(member.end) ? member.end : null,
+    note: member.note || null, updated_at: new Date().toISOString(),
+  };
+  const result = await dbRequest('members', isNew ? '' : `id=eq.${encodeURIComponent(member.id)}`, {
+    method: isNew ? 'POST' : 'PATCH', prefer: 'return=representation', body: payload,
+  });
+  if (!result?.length) throw new Error('팀원 정보를 저장하지 못했습니다.');
+  return mapMember(result[0]);
+}
+async function changeMember(name) {
   const member = members.find((m) => m.name === name); if (!member) return;
+  const before = { ...member };
   const action = prompt(`${name}님의 근무 상태를 변경합니다.\n\n1 = 본사 근무\n2 = 프로젝트 근무\n3 = 퇴사 처리\n\n현재: ${member.type === 'office' ? '본사 근무' : '프로젝트 근무'}`);
-  if (action === '1') { member.type = 'office'; member.client = ''; member.project = ''; toast(`${name}님을 본사 근무로 변경했어요.`); }
-  else if (action === '2') { const client = prompt('고객명을 입력해 주세요.', member.client || ''); if (client === null) return; const project = prompt('프로젝트명을 입력해 주세요.', member.project || ''); if (project === null) return; member.type = 'project'; member.client = client; member.project = project; member.end = member.end || '미정'; toast(`${name}님을 프로젝트 근무로 변경했어요.`); }
-  else if (action === '3') { member.active = false; toast(`${name}님을 비활성 처리했어요.`); }
+  if (action === '1') { member.type = 'office'; member.client = '본사'; member.project = '본사 근무 및 교육'; member.start = ''; member.end = ''; }
+  else if (action === '2') { const client = prompt('고객명을 입력해 주세요.', member.client || ''); if (client === null) return; const project = prompt('프로젝트명을 입력해 주세요.', member.project || ''); if (project === null) return; member.type = 'project'; member.client = client; member.project = project; member.end = member.end || ''; }
+  else if (action === '3') member.active = false;
   else return;
-  save(); render();
+  try {
+    await persistMember(member); save(); render();
+    toast(action === '3' ? `${name}님을 비활성 처리했어요.` : `${name}님의 근무 상태를 변경했어요.`);
+  } catch (error) { Object.assign(member, before); toast(`저장하지 못했어요: ${error.message}`); }
 }
-function addMember() {
+async function addMember() {
   const name = prompt('추가할 팀원 이름을 입력해 주세요.'); if (!name?.trim()) return;
+  if (members.some((member) => member.name === name.trim())) return toast('이미 등록된 이름입니다.');
   const role = prompt('직급을 입력해 주세요.', '사원'); if (role === null) return;
   const job = prompt('직무를 입력해 주세요.', '개발'); if (job === null) return;
   const mode = prompt('근무 구분을 선택해 주세요.\n1 = 본사 근무\n2 = 프로젝트 근무', '1'); if (mode === null) return;
-  let member = { name: name.trim(), role, job, type: mode === '2' ? 'project' : 'office', active: true };
-  if (member.type === 'project') { member.client = prompt('고객명', '') || '미정'; member.project = prompt('프로젝트명', '') || '미정'; member.end = prompt('철수 예정일 (YYYY.MM.DD)', '미정') || '미정'; }
-  members.push(member); save(); render(); toast(`${member.name}님을 팀원으로 추가했어요.`);
+  let member = { name: name.trim(), role, job, position: '팀원', type: mode === '2' ? 'project' : 'office', active: true, client: '본사', project: '본사 근무 및 교육' };
+  if (member.type === 'project') { member.client = prompt('고객명', '') || '미정'; member.project = prompt('프로젝트명', '') || '미정'; member.end = prompt('철수 예정일 (YYYY-MM-DD)', '') || ''; }
+  try {
+    const savedMember = await persistMember(member, true);
+    if (savedMember) member = savedMember;
+    members.push(member); save(); render(); toast(`${member.name}님을 팀원으로 추가했어요.`);
+  } catch (error) { toast(`팀원을 추가하지 못했어요: ${error.message}`); }
 }
 
 // Small, dependency-free XLSX writer: creates a real OOXML workbook with two sheets.
@@ -258,4 +370,4 @@ function checkReminder() {
   const key = `workweek-reminded-${now.toISOString().slice(0, 10)}`; if (localStorage.getItem(key)) return;
   new Notification('주간업무 보고 마감 안내', { body: '이번 주 보고를 오전 11시까지 제출해 주세요.', icon: '/icon.svg' }); localStorage.setItem(key, '1');
 }
-setInterval(checkReminder, 30000); render();
+setInterval(checkReminder, 30000); render(); initializeRemoteData();
