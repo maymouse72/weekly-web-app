@@ -7,6 +7,7 @@ const toLocalISO = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1
 const currentDate = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric' }).format(new Date()).toUpperCase();
 const CURRENT_WEEK = { start: toLocalISO(weekStart), end: toLocalISO(weekEnd), label: `${weekStart.getMonth() + 1}월 ${weekStart.getDate()}일 — ${weekEnd.getMonth() + 1}월 ${weekEnd.getDate()}일` };
 const deadlineDate = `${weekThursday.getMonth() + 1}월 ${weekThursday.getDate()}일 (목) 오전 11:00`;
+const WORK_CATEGORIES = ['본사 근무 및 교육', '제안', '사업지원'];
 const names = [
   { name: '김강수', role: '수석', job: 'PM', type: 'office' }, { name: '전희성', role: '수석', job: 'PM', type: 'office' },
   { name: '전용훈', role: '책임', job: '개발', type: 'office' }, { name: '박창준', role: '선임', job: '개발', type: 'office' },
@@ -78,12 +79,13 @@ async function dbRequest(table, query = '', options = {}) {
 }
 function mapMember(row) {
   return { id: row.id, name: row.name, role: row.role, job: row.job, position: row.position || '팀원', type: row.work_type,
-    active: row.status === 'ACTIVE', isAdmin: row.is_admin, client: row.project_client || '', project: row.project_name || '',
-    start: row.assignment_start || '', end: row.assignment_end || '', note: row.note || '' };
+    active: row.status === 'ACTIVE', isAdmin: row.is_admin };
 }
 function mapReport(row) {
   return { id: row.id, task: row.task_content || '', next: row.next_week_plan || '', leave: row.leave_note || '',
-    category: row.work_category || '', submitted: row.submitted, week: row.week_start,
+    category: row.work_category || '', project: row.project_name || '', client: row.project_client || '', start: row.assignment_start || '', end: row.assignment_end || '', salesOwner: row.sales_owner || '', note: row.note || '',
+    nextCategory: row.next_work_category || '', nextProject: row.next_project_name || '', nextClient: row.next_project_client || '', nextStart: row.next_assignment_start || '', nextEnd: row.next_assignment_end || '', nextSalesOwner: row.next_sales_owner || '', nextNote: row.next_note || '',
+    submitted: row.submitted, week: row.week_start,
     time: row.submitted_at ? new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(row.submitted_at)) : '' };
 }
 async function initializeRemoteData() {
@@ -122,6 +124,21 @@ const office = () => members.filter((m) => m.active && m.type === 'office');
 const projectStaff = () => members.filter((m) => m.active && m.type === 'project');
 const currentMember = () => members.find((m) => m.active && m.name === state.currentMemberName);
 const isManager = () => Boolean(currentMember()?.isAdmin || currentMember()?.position === '팀장');
+const assignmentOf = (member) => {
+  const report = reports[member?.name];
+  return { client: report?.client || member?.client || '', project: report?.project || member?.project || '', start: report?.start || member?.start || '',
+    end: report?.end || member?.end || '', salesOwner: report?.salesOwner || '', note: report?.note || member?.note || '' };
+};
+function structuredFields(scope, data = {}, categoryRequired = false) {
+  const attr = `data-${scope}-field`;
+  const category = data.category || '';
+  const categoryOptions = `<option value="">업무구분 선택</option>${WORK_CATEGORIES.map((item) => `<option value="${escapeHtml(item)}" ${category === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}`;
+  return `<div class="structured-fields"><label class="structured-field"><span>업무구분${categoryRequired ? ' *' : ''}</span><select class="select-input" ${attr}="work_category" ${categoryRequired ? 'required' : ''}>${categoryOptions}</select></label><label class="structured-field"><span>프로젝트명</span><input class="text-input" ${attr}="project_name" value="${escapeHtml(data.project || '')}" /></label><label class="structured-field"><span>고객사</span><input class="text-input" ${attr}="project_client" value="${escapeHtml(data.client || '')}" /></label><label class="structured-field"><span>투입기간 (from)</span><input class="text-input" type="date" ${attr}="assignment_start" value="${escapeHtml(data.start || '')}" /></label><label class="structured-field"><span>투입기간 (to)</span><input class="text-input" type="date" ${attr}="assignment_end" value="${escapeHtml(data.end || '')}" /></label><label class="structured-field"><span>담당영업</span><input class="text-input" ${attr}="sales_owner" value="${escapeHtml(data.salesOwner || '')}" /></label><label class="structured-field structured-field-wide"><span>기타</span><textarea class="text-area compact" ${attr}="note" placeholder="기타 전달 사항">${escapeHtml(data.note || '')}</textarea></label></div>`;
+}
+function reportFieldsFromForm(form, scope) {
+  const get = (field) => form.querySelector(`[data-${scope}-field="${field}"]`)?.value.trim() || '';
+  return { work_category: get('work_category'), project_name: get('project_name'), project_client: get('project_client'), assignment_start: get('assignment_start') || null, assignment_end: get('assignment_end') || null, sales_owner: get('sales_owner'), note: get('note') };
+}
 const statusOf = (m) => m.type === 'project' ? 'auto' : reports[m.name]?.submitted && reports[m.name]?.week === CURRENT_WEEK.start ? 'done' : 'pending';
 const save = () => { localStorage.setItem('workweek-state', JSON.stringify({ members, reports, ui: { page: state.page, memberFilter: state.memberFilter } })); };
 const fmtDate = (iso) => { const [y, m, d] = iso.split('-'); return `${y}.${m}.${d}`; };
@@ -149,41 +166,55 @@ function dashboard() {
   const me = currentMember();
   if (!isManager()) {
     const report = reports[me?.name] || {};
+    const assignment = assignmentOf(me);
     const submitted = report.submitted && report.week === CURRENT_WEEK.start;
     return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '나의 주간업무와 제출 상태를 확인해 보세요.')}
-      <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">MY WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>${me?.type === 'office' ? (submitted ? '이번 주 보고를 제출했어요' : '이번 주 보고를 작성해 주세요') : '프로젝트 근무 중입니다'}</h2><p>${me?.type === 'office' ? '주간보고 내용은 제출 후 팀장이 취합합니다.' : `${escapeHtml(me?.client || '')} · ${escapeHtml(me?.project || '')}`}</p></div><button class="banner-cta" data-page="report">${me?.type === 'office' ? '내 보고서 보기' : '근무 정보 보기'} <span>→</span></button></section>
+      <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">MY WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>${me?.type === 'office' ? (submitted ? '이번 주 보고를 제출했어요' : '이번 주 보고를 작성해 주세요') : '프로젝트 근무 중입니다'}</h2><p>${me?.type === 'office' ? '주간보고 내용은 제출 후 팀장이 취합합니다.' : '프로젝트 근무자는 팀장이 전주 내용을 반영합니다'}</p></div><button class="banner-cta" data-page="report">${me?.type === 'office' ? '내 보고서 보기' : '근무 정보 보기'} <span>→</span></button></section>
       <section class="stats-grid"><article class="stat-card"><div class="stat-head">내 제출 상태<span class="stat-icon ${submitted ? 'icon-green' : 'icon-amber'}">${submitted ? '✓' : '◷'}</span></div><div class="stat-value" style="font-size:22px">${me?.type === 'project' ? '자동 반영' : submitted ? '제출 완료' : '작성 대기'}</div><div class="stat-note">${me?.type === 'office' ? (report.time ? `${report.time} 제출` : '목요일 오전 11시 마감') : '팀장이 주간보고에 반영합니다'}</div></article><article class="stat-card"><div class="stat-head">이번 주 보고 기간<span class="stat-icon icon-blue">▦</span></div><div class="stat-value" style="font-size:18px">${CURRENT_WEEK.label}</div><div class="stat-note">월요일부터 금요일까지</div></article></section>
-      <article class="panel"><div class="panel-header"><div><h3>내 주간업무</h3><p class="panel-subtitle">이 화면에서는 본인 보고만 확인할 수 있습니다.</p></div>${me?.type === 'office' ? '<button class="text-link" data-page="report">보고서 작성 →</button>' : ''}</div><div class="activity-item"><div><strong>${escapeHtml(report.task || (me?.type === 'office' ? '아직 제출한 보고가 없습니다.' : '프로젝트 근무는 팀장이 전주 내용을 반영합니다.'))}</strong>${report.next ? `<small>차주 계획: ${escapeHtml(report.next)}</small>` : ''}</div></div></article>`;
+      <article class="panel"><div class="panel-header"><div><h3>내 주간업무</h3><p class="panel-subtitle">이 화면에서는 본인 보고만 확인할 수 있습니다.</p>${me?.type === 'project' ? `<div class="assignment-summary"><span>고객사<strong>${escapeHtml(assignment.client || '—')}</strong></span><span>프로젝트명<strong>${escapeHtml(assignment.project || '—')}</strong></span><span>투입일자<strong>${assignment.start ? fmtDate(assignment.start) : '—'}</strong></span><span>철수일자<strong>${assignment.end ? fmtDate(assignment.end) : '—'}</strong></span></div>` : ''}</div>${me?.type === 'office' ? '<button class="text-link" data-page="report">보고서 작성 →</button>' : ''}</div><div class="activity-item"><div><strong>${escapeHtml(report.task || (me?.type === 'office' ? '아직 제출한 보고가 없습니다.' : '프로젝트 근무는 팀장이 전주 내용을 반영합니다.'))}</strong>${report.next ? `<small>차주 계획: ${escapeHtml(report.next)}</small>` : ''}</div></div></article>`;
   }
   const done = office().filter((m) => statusOf(m) === 'done').length;
   const pending = office().length - done;
-  return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '이번 주 업무를 정리하고 팀 보고를 준비해 보세요.', '<button class="button" data-action="go-team">팀원 현황</button>')}
-    <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>이번 주 보고, 목요일 오전 11시까지</h2><p>이번 주 업무 내용을 작성해 팀장에게 제출해 주세요. 지난주 내용을 가져와 쉽게 시작할 수 있어요.</p></div><button class="banner-cta" data-page="report">보고서 작성하기 <span>→</span></button></section>
+  return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '이번 주 팀 보고를 확인하고 프로젝트 근무자 보고를 작성해 주세요.', '<button class="button" data-action="go-team">팀원 현황</button>')}
+    <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>이번 주 보고, 목요일 오전 11시까지</h2><p>프로젝트 근무자 보고를 입력하고 상사 보고용 취합본을 준비해 주세요.</p></div><button class="banner-cta" data-page="report">보고서 작성하기 <span>→</span></button></section>
     <section class="stats-grid"><article class="stat-card"><div class="stat-head">팀 전체 인원<span class="stat-icon icon-blue">♧</span></div><div class="stat-value">${members.filter((m) => m.active).length}<small> 명</small></div><div class="stat-note">본사 ${office().length}명 · 프로젝트 ${projectStaff().length}명</div></article><article class="stat-card"><div class="stat-head">본사 보고 제출<span class="stat-icon icon-green">✓</span></div><div class="stat-value">${done}<small> / ${office().length}</small></div><div class="stat-note">목요일 오전 11시 마감</div></article><article class="stat-card"><div class="stat-head">작성 대기<span class="stat-icon icon-amber">◷</span></div><div class="stat-value">${pending}<small> 명</small></div><div class="stat-note">본사 근무자 보고 필요</div></article><article class="stat-card"><div class="stat-head">프로젝트 인력<span class="stat-icon icon-gray">↗</span></div><div class="stat-value">${projectStaff().length}<small> 명</small></div><div class="stat-note">전주 내용 자동 반영</div></article></section>
     <section class="content-grid"><article class="panel"><div class="panel-header"><div><h3>보고 제출 현황</h3><p class="panel-subtitle">본사 근무자는 매주 직접 제출해요</p></div><button class="text-link" data-page="admin">전체 보기 →</button></div><div class="submission-list">${submissionRows()}</div><div class="progress-wrap"><div class="progress-label"><span>제출 진행률</span><strong>${office().length ? Math.round(done / office().length * 100) : 0}%</strong></div><div class="progress-track"><div class="progress-fill" style="width:${office().length ? done / office().length * 100 : 0}%"></div></div></div></article><div class="side-panel"><article class="reminder-card"><div class="reminder-top"><h3>다음 마감 일정</h3><span class="badge badge-pending">오늘 마감</span></div><p>본사 근무자 주간업무 보고 제출 마감입니다.</p><div class="reminder-date"><span>이번 주 보고</span><strong>오늘 오전 11:00</strong></div></article><article class="activity-card"><div class="panel-header"><div><h3>팀 보고 활동</h3><p class="panel-subtitle">이번 주 업데이트</p></div><span class="stat-icon icon-green">↗</span></div>${office().filter((m) => statusOf(m) === 'done').slice(-3).reverse().map((m, i) => `<div class="activity-item"><span class="activity-dot"></span><div><small><strong>${escapeHtml(m.name)}</strong>님이 주간보고를 제출했어요</small><time>${reports[m.name]?.time || '10:32'} · 오늘</time></div></div>`).join('')}</article></div></section>`;
 }
 function reportPage() {
   const me = members.find((m) => m.name === state.currentMemberName) || office()[0] || { name: '팀원', type: 'office', role: '', job: '' };
+  if (isManager()) return managerReportPage();
   const report = reports[me.name] || {};
-  const editable = me.type === 'office';
-  return `${heading('MY WEEKLY REPORT', '주간보고 작성', `업무 내용을 정리해 ${fmtDate(CURRENT_WEEK.start)} — ${fmtDate(CURRENT_WEEK.end)} 주간보고를 제출해 주세요.`, '<button class="button" data-action="copy-last">↺ 지난주 내용 가져오기</button>')}
-    ${editable ? `<div class="report-layout"><form class="report-card" id="reportForm"><div class="form-section"><label class="form-label">보고 대상</label><div class="report-meta"><span class="meta-chip">${escapeHtml(me.name)} · ${escapeHtml(me.role)} ${escapeHtml(me.job)}</span><span class="meta-chip">본사 근무</span><span class="meta-chip">보고 기간 ${fmtDate(CURRENT_WEEK.start)} — ${fmtDate(CURRENT_WEEK.end)}</span></div></div><div class="form-section"><label class="form-label" for="taskInput">금주 업무 내용 <span style="color:#d45b56">*</span></label><p class="form-help">이번 주에 진행한 업무와 주요 결과를 작성해 주세요.</p><textarea class="text-area" id="taskInput" required placeholder="예: 담당 업무 진행 상황, 완료한 작업, 주요 이슈 등을 입력해 주세요.">${escapeHtml(report.task || '')}</textarea></div><div class="form-section"><label class="form-label" for="nextInput">차주 업무 계획</label><p class="form-help">다음 주 예정된 업무나 일정이 있다면 작성해 주세요.</p><textarea class="text-area compact" id="nextInput" placeholder="예: 다음 주 진행할 업무와 주요 일정">${escapeHtml(report.next || '')}</textarea></div><div class="form-row"><div><label class="form-label" for="leaveInput">휴가·특이사항</label><input class="text-input" id="leaveInput" value="${escapeHtml(report.leave || '')}" placeholder="해당 사항이 없으면 비워두세요" /></div><div><label class="form-label" for="projectInput">업무 구분</label><select class="select-input" id="projectInput"><option>본사 근무 및 교육</option><option>내부 지원 업무</option><option>기타</option></select></div></div><div class="form-actions"><span class="save-note">${report.submitted ? `마지막 제출 ${report.time || '10:43'} · 수정 후 다시 제출할 수 있어요.` : '보고 제출하기를 누르면 DB에 저장됩니다. 제출 전 초안은 저장되지 않습니다.'}</span><button class="button button-primary" type="submit">보고 제출하기 <span>→</span></button></div></form><aside class="report-aside"><article class="aside-card"><h3>제출 전 확인</h3><div class="check-list"><div class="check-item"><span class="check-icon">✓</span>보고 기간이 맞는지 확인</div><div class="check-item"><span class="check-icon">✓</span>금주 업무 내용을 작성</div><div class="check-item"><span class="check-icon">✓</span>제출 후에도 수정 가능</div></div></article><article class="aside-card"><h3>지난주 보고 불러오기</h3><div class="aside-tip">변동이 없다면 지난주 업무 내용을 가져와 기간만 확인하고 제출할 수 있어요.</div><button class="button button-soft" style="width:100%;margin-top:11px" data-action="copy-last">지난주 내용 가져오기</button></article><article class="aside-card auto-copy-card"><h3>프로젝트 근무자는 자동 반영</h3><p>프로젝트 근무 중인 팀원은 전주 보고 내용을 이번 주 취합본에 자동으로 반영해요. 변경이 필요하면 팀장에게 알려주세요.</p></article></aside></div>` : `<article class="panel"><h3>프로젝트 근무 상태</h3><p class="panel-subtitle">현재 프로젝트 근무 중입니다. 주간보고는 팀장이 지난주 내용을 자동 반영해요.</p></article>`}`;
+  if (me.type !== 'office') return `${heading('MY WEEKLY REPORT', '주간보고', '프로젝트 근무자는 팀장이 주간보고를 작성합니다.')}`;
+  return `${heading('MY WEEKLY REPORT', '주간보고 작성', `${fmtDate(CURRENT_WEEK.start)} — ${fmtDate(CURRENT_WEEK.end)} 주간업무를 입력해 제출해 주세요.`, '<button class="button" data-action="copy-last">↺ 지난주 내용 가져오기</button>')}
+    <div class="report-layout"><form class="report-card" id="reportForm"><div class="form-section"><label class="form-label">보고 대상</label><div class="report-meta"><span class="meta-chip">${escapeHtml(me.name)} · ${escapeHtml(me.role)} ${escapeHtml(me.job)}</span><span class="meta-chip">본사 근무</span><span class="meta-chip">보고 기간 ${fmtDate(CURRENT_WEEK.start)} — ${fmtDate(CURRENT_WEEK.end)}</span></div></div><div class="form-section"><div class="form-section-heading"><div><label class="form-label">금주 업무 내용</label><p class="form-help">업무구분을 선택하고 해당 주의 업무 정보를 입력해 주세요.</p></div><button type="button" class="button button-soft" data-action="copy-current-to-next">금주 내용을 차주 계획에 복사</button></div>${structuredFields('current', report, true)}</div><div class="form-section"><label class="form-label">차주 업무 계획</label><p class="form-help">금주 내용을 복사한 뒤 수정하거나 직접 입력할 수 있습니다.</p>${structuredFields('next', { category: report.nextCategory, project: report.nextProject, client: report.nextClient, start: report.nextStart, end: report.nextEnd, salesOwner: report.nextSalesOwner, note: report.nextNote })}</div><div class="form-actions"><span class="save-note">${report.submitted ? `마지막 제출 ${report.time || ''} · 수정 후 다시 제출할 수 있어요.` : '업무구분을 선택한 뒤 보고서를 제출해 주세요.'}</span><button class="button button-primary" type="submit">보고 제출하기 <span>→</span></button></div></form><aside class="report-aside"><article class="aside-card"><h3>제출 전 확인</h3><div class="check-list"><div class="check-item"><span class="check-icon">✓</span>보고 기간이 맞는지 확인</div><div class="check-item"><span class="check-icon">✓</span>업무구분을 선택</div><div class="check-item"><span class="check-icon">✓</span>제출 후에도 수정 가능</div></div></article><article class="aside-card"><h3>지난주 보고 불러오기</h3><div class="aside-tip">지난주 차주 업무 계획을 이번 주 업무 내용으로 가져옵니다. 차주 계획은 직접 입력하거나 금주 내용을 복사할 수 있어요.</div><button class="button button-soft" style="width:100%;margin-top:11px" data-action="copy-last">지난주 내용 가져오기</button></article></aside></div>`;
+}
+function managerReportPage() {
+  const rows = projectStaff().map((member, index) => {
+    const report = reports[member.name] || {};
+    return `<tr data-manager-row="${escapeHtml(member.name)}"><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(index)}">${initials(member.name)}</span><div><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.role)} · ${escapeHtml(member.job)}</small></div></div></td><td><select class="select-input manager-category" data-manager-field="work_category" required><option value="">선택</option>${WORK_CATEGORIES.map((category) => `<option value="${escapeHtml(category)}" ${report.category === category ? 'selected' : ''}>${escapeHtml(category)}</option>`).join('')}</select></td><td><input class="text-input" data-manager-field="project_name" value="${escapeHtml(report.project || '')}" placeholder="프로젝트명" /></td><td><input class="text-input" data-manager-field="project_client" value="${escapeHtml(report.client || '')}" placeholder="고객사" /></td><td><input class="text-input" type="date" data-manager-field="assignment_start" value="${escapeHtml(report.start || '')}" /></td><td><input class="text-input" type="date" data-manager-field="assignment_end" value="${escapeHtml(report.end || '')}" /></td><td><input class="text-input" data-manager-field="sales_owner" value="${escapeHtml(report.salesOwner || '')}" placeholder="담당영업" /></td><td><textarea class="text-area compact" data-manager-field="note" placeholder="기타">${escapeHtml(report.note || '')}</textarea></td><td><button class="button button-primary button-small" data-action="save-project-report">저장</button><button class="button button-soft button-small" data-action="copy-project-last">지난 주 내용 가져오기</button></td></tr>`;
+  }).join('');
+  return `${heading('MANAGER WORKSPACE', '프로젝트 주간보고 작성', `${CURRENT_WEEK.label} 프로젝트 근무자 보고를 팀장이 입력합니다.`)}<article class="panel"><p class="panel-subtitle">각 팀원의 업무 정보를 입력하고 저장하세요. 지난 주 내용을 가져온 뒤 이번 주 내용을 수정할 수 있습니다.</p><div class="table-wrap manager-report-table"><table class="data-table"><thead><tr><th>팀원</th><th>업무구분 *</th><th>프로젝트명</th><th>고객사</th><th>투입기간 (from)</th><th>투입기간 (to)</th><th>담당영업</th><th>기타</th><th>저장 / 복사</th></tr></thead><tbody>${rows || '<tr><td colspan="9"><div class="empty-state">프로젝트 근무자가 없습니다.</div></td></tr>'}</tbody></table></div></article>`;
 }
 function teamPage() {
   let list = members.filter((m) => m.active);
   if (state.memberFilter === 'office' || state.memberFilter === 'project') list = list.filter((m) => m.type === state.memberFilter);
-  if (state.query) list = list.filter((m) => `${m.name} ${m.role} ${m.client || ''} ${m.project || ''}`.toLowerCase().includes(state.query.toLowerCase()));
-  const rows = list.map((m, i) => `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}${m.position === '팀장' ? ' · 팀장' : ''}</small></div></div></td><td>${m.type === 'office' ? '<span class="badge badge-neutral">본사 근무</span>' : '<span class="badge badge-auto">프로젝트</span>'}</td><td>${escapeHtml(m.client || '—')}</td><td>${escapeHtml(m.project || '본사 근무 및 교육')}</td><td>${m.type === 'office' ? badge(statusOf(m)) : `<span class="table-muted">${escapeHtml(m.end || '—')} 철수 예정</span>`}</td><td><button class="text-link" data-action="change-member" data-name="${escapeHtml(m.name)}">상태 변경</button></td></tr>`).join('');
+  if (state.query) list = list.filter((m) => { const a = assignmentOf(m); return `${m.name} ${m.role} ${a.client} ${a.project}`.toLowerCase().includes(state.query.toLowerCase()); });
+  const rows = list.map((m, i) => { const a = assignmentOf(m); return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}${m.position === '팀장' ? ' · 팀장' : ''}</small></div></div></td><td>${m.type === 'office' ? '<span class="badge badge-neutral">본사 근무</span>' : '<span class="badge badge-auto">프로젝트</span>'}</td><td>${escapeHtml(a.client || '—')}</td><td>${escapeHtml(a.project || '본사 근무 및 교육')}</td><td>${m.type === 'office' ? badge(statusOf(m)) : `<span class="table-muted">${a.end ? fmtDate(a.end) : '—'} 철수 예정</span>`}</td><td><button class="text-link" data-action="change-member" data-name="${escapeHtml(m.name)}">상태 변경</button></td></tr>`; }).join('');
   return `${heading('TEAM DIRECTORY', '팀원 현황', `본사와 프로젝트 인력을 확인하고 근무 상태 변경을 관리해요. 현재 ${members.filter((m) => m.active).length}명`, '<button class="button button-primary" data-action="add-member">＋ 팀원 추가</button>')}
     <div class="toolbar"><div class="filter-tabs"><button class="filter-tab ${state.memberFilter === 'all' ? 'active' : ''}" data-filter="all">전체 ${members.filter((m) => m.active).length}</button><button class="filter-tab ${state.memberFilter === 'office' ? 'active' : ''}" data-filter="office">본사 ${office().length}</button><button class="filter-tab ${state.memberFilter === 'project' ? 'active' : ''}" data-filter="project">프로젝트 ${projectStaff().length}</button></div><label class="search-box"><span>⌕</span><input id="teamSearch" value="${escapeHtml(state.query)}" placeholder="이름, 프로젝트 검색" /></label></div>
     <div class="table-wrap"><table class="data-table"><thead><tr><th>팀원</th><th>근무 구분</th><th>고객</th><th>프로젝트 / 업무</th><th>보고 / 철수 예정</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6"><div class="empty-state">검색 결과가 없습니다.</div></td></tr>'}</tbody></table></div>`;
 }
 function adminPage() {
   const done = office().filter((m) => statusOf(m) === 'done').length, pending = office().length - done;
+  const renderSubmittedTable = (list, kind) => list.map((member, index) => {
+    const report = reports[member.name] || {};
+    return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(index)}">${initials(member.name)}</span><div><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.role)} · ${escapeHtml(member.job)}</small></div></div></td><td>${escapeHtml(report.category || '—')}</td><td>${escapeHtml(report.client || '—')}</td><td>${escapeHtml(report.project || '—')}</td><td>${report.start ? fmtDate(report.start) : '—'}</td><td>${report.end ? fmtDate(report.end) : '—'}</td><td>${escapeHtml(report.salesOwner || '—')}</td><td>${escapeHtml(report.note || '—')}</td><td>${kind === 'office' ? badge(statusOf(member)) : badge(report.submitted ? 'done' : 'pending')}</td></tr>`;
+  }).join('');
+  const reportHeader = '<thead><tr><th>팀원</th><th>업무구분</th><th>고객사</th><th>프로젝트명</th><th>투입 from</th><th>투입 to</th><th>담당영업</th><th>기타</th><th>상태</th></tr></thead>';
   return `${heading('MANAGER WORKSPACE', '취합 및 내보내기', '본사 보고와 프로젝트 인력 현황을 확인하고 상사 보고용 엑셀을 내려받으세요.', '<button class="button button-primary" data-action="export-xlsx">↓ 엑셀 다운로드</button>')}
-    <section class="stats-grid"><article class="stat-card"><div class="stat-head">제출 완료<span class="stat-icon icon-green">✓</span></div><div class="stat-value">${done}<small> / ${office().length}명</small></div><div class="stat-note">본사 근무자</div></article><article class="stat-card"><div class="stat-head">미제출<span class="stat-icon icon-amber">◷</span></div><div class="stat-value">${pending}<small> 명</small></div><div class="stat-note">제출 독려가 필요한 인원</div></article><article class="stat-card"><div class="stat-head">프로젝트 인력<span class="stat-icon icon-blue">↗</span></div><div class="stat-value">${projectStaff().length}<small> 명</small></div><div class="stat-note">전주 보고 내용 자동 반영</div></article><article class="stat-card"><div class="stat-head">보고 기간<span class="stat-icon icon-gray">▦</span></div><div class="stat-value" style="font-size:15px;margin-top:15px">${CURRENT_WEEK.label}</div><div class="stat-note">2026년 10월 둘째 주</div></article></section>
-    <article class="panel" style="margin-bottom:14px"><div class="panel-header"><div><h3>본사 근무자 보고</h3><p class="panel-subtitle">직접 제출한 금주 업무와 차주 계획</p></div><span class="badge badge-pending">${pending}명 대기</span></div><div class="table-wrap" style="border:0"><table class="data-table" style="min-width:580px"><thead><tr><th>팀원</th><th>상태</th><th>금주 업무</th><th>차주 계획</th><th>제출</th></tr></thead><tbody>${office().map((m, i) => { const r = reports[m.name] || {}; return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}</small></div></div></td><td>${badge(statusOf(m))}</td><td>${r.task ? escapeHtml(r.task.split('\n')[0]) : '<span class="table-muted">제출 대기</span>'}</td><td>${r.next ? escapeHtml(r.next.split('\n')[0]) : '<span class="table-muted">—</span>'}</td><td class="table-muted">${r.time || '—'}</td></tr>`; }).join('')}</tbody></table></div></article>
-    <article class="panel"><div class="panel-header"><div><h3>프로젝트 인력 자동 반영</h3><p class="panel-subtitle">전주 보고를 복사하고 이번 주 기간을 적용해요. 인력 상태에서 프로젝트 배치가 관리됩니다.</p></div><span class="badge badge-auto">${projectStaff().length}명 자동 반영</span></div><div class="table-wrap" style="border:0"><table class="data-table" style="min-width:580px"><thead><tr><th>팀원</th><th>고객</th><th>프로젝트</th><th>철수 예정</th><th>주간보고</th></tr></thead><tbody>${projectStaff().map((m, i) => `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i + 1)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}</small></div></div></td><td>${escapeHtml(m.client)}</td><td>${escapeHtml(m.project)}</td><td>${escapeHtml(m.end || '—')}</td><td>${badge('auto')}</td></tr>`).join('')}</tbody></table></div></article>`;
+    <section class="stats-grid"><article class="stat-card"><div class="stat-head">제출 완료<span class="stat-icon icon-green">✓</span></div><div class="stat-value">${done}<small> / ${office().length}명</small></div><div class="stat-note">본사 근무자</div></article><article class="stat-card"><div class="stat-head">미제출<span class="stat-icon icon-amber">◷</span></div><div class="stat-value">${pending}<small> 명</small></div><div class="stat-note">본사 근무자</div></article><article class="stat-card"><div class="stat-head">프로젝트 인력<span class="stat-icon icon-blue">↗</span></div><div class="stat-value">${projectStaff().length}<small> 명</small></div><div class="stat-note">팀장 작성 대상</div></article><article class="stat-card"><div class="stat-head">보고 기간<span class="stat-icon icon-gray">▦</span></div><div class="stat-value" style="font-size:15px;margin-top:15px">${CURRENT_WEEK.label}</div><div class="stat-note">월요일부터 금요일까지</div></article></section>
+    <article class="panel" style="margin-bottom:14px"><div class="panel-header"><div><h3>본사 근무자 보고</h3><p class="panel-subtitle">팀원이 직접 제출한 구조화 보고</p></div><span class="badge badge-pending">${pending}명 미제출</span></div><div class="table-wrap" style="border:0"><table class="data-table" style="min-width:1050px">${reportHeader}<tbody>${renderSubmittedTable(office(), 'office') || '<tr><td colspan="9">본사 근무자가 없습니다.</td></tr>'}</tbody></table></div></article>
+    <article class="panel"><div class="panel-header"><div><h3>프로젝트 근무자 보고</h3><p class="panel-subtitle">팀장이 대신 작성한 구조화 보고</p></div><span class="badge badge-auto">${projectStaff().length}명</span></div><div class="table-wrap" style="border:0"><table class="data-table" style="min-width:1050px">${reportHeader}<tbody>${renderSubmittedTable(projectStaff(), 'project') || '<tr><td colspan="9">프로젝트 근무자가 없습니다.</td></tr>'}</tbody></table></div></article>`;
 }
 function settingsPage() {
   return `${heading('PREFERENCES', '알림 설정', '마감 알림을 받을 시간과 방법을 설정해요.')}
@@ -234,40 +265,98 @@ function copyLast() {
   const me = members.find((m) => m.name === state.currentMemberName); if (!me) return toast('지난주 보고 내용을 찾지 못했어요.');
   const previous = previousReports[me.name] || (localPreview ? sampleReports[me.name] : null);
   if (!previous) return toast('지난주 보고 내용을 찾지 못했어요.');
-  $('#taskInput').value = previous?.task || ''; $('#nextInput').value = previous?.next || '';
+  const values = previous.nextCategory || previous.nextProject || previous.nextClient || previous.nextNote
+    ? { category: previous.nextCategory, project: previous.nextProject, client: previous.nextClient, start: previous.nextStart, end: previous.nextEnd, salesOwner: previous.nextSalesOwner, note: previous.nextNote }
+    : { category: previous.category, project: previous.project, client: previous.client, start: previous.start, end: previous.end, salesOwner: previous.salesOwner, note: previous.note };
+  for (const [field, value] of Object.entries({ work_category: values.category, project_name: values.project, project_client: values.client, assignment_start: values.start, assignment_end: values.end, sales_owner: values.salesOwner, note: values.note })) {
+    const input = $(`[data-current-field="${field}"]`); if (input) input.value = value || '';
+  }
   toast('지난주 내용을 가져왔어요. 기간을 확인하고 제출해 주세요.');
 }
+function copyCurrentToNext() {
+  const form = $('#reportForm'); if (!form) return;
+  const current = reportFieldsFromForm(form, 'current');
+  const mapping = { work_category: 'next_work_category', project_name: 'next_project_name', project_client: 'next_project_client', assignment_start: 'next_assignment_start', assignment_end: 'next_assignment_end', sales_owner: 'next_sales_owner', note: 'next_note' };
+  for (const [source, target] of Object.entries(mapping)) {
+    const input = form.querySelector(`[data-next-field="${target.replace('next_', '')}"]`);
+    if (input) input.value = current[source] || '';
+  }
+  toast('금주 내용을 차주 계획에 복사했습니다.');
+}
+function serializeFields(fields) {
+  return [`업무구분: ${fields.work_category}`, `프로젝트명: ${fields.project_name}`, `고객사: ${fields.project_client}`, `투입기간: ${fields.assignment_start || ''} ~ ${fields.assignment_end || ''}`, `담당영업: ${fields.sales_owner}`, `기타: ${fields.note}`].filter((line) => !line.endsWith(': ')).join('\n');
+}
 async function saveReport(event) {
-  event.preventDefault(); const task = $('#taskInput').value.trim();
-  if (!task) return toast('금주 업무 내용을 입력해 주세요.');
+  event.preventDefault();
   const member = members.find((item) => item.name === state.currentMemberName);
   if (!member) return toast('팀원 정보를 다시 확인해 주세요.');
+  const current = reportFieldsFromForm(event.target, 'current');
+  const next = reportFieldsFromForm(event.target, 'next');
+  if (!current.work_category) return toast('업무구분을 선택해 주세요.');
   const now = new Date();
-  const report = { task, next: $('#nextInput').value.trim(), leave: $('#leaveInput').value.trim(), category: $('#projectInput').value, submitted: true, week: CURRENT_WEEK.start, time: new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(now) };
+  const report = { category: current.work_category, project: current.project_name, client: current.project_client, start: current.assignment_start || '', end: current.assignment_end || '', salesOwner: current.sales_owner, note: current.note,
+    nextCategory: next.work_category, nextProject: next.project_name, nextClient: next.project_client, nextStart: next.assignment_start || '', nextEnd: next.assignment_end || '', nextSalesOwner: next.sales_owner, nextNote: next.note,
+    task: serializeFields(current), next: serializeFields(next), submitted: true, week: CURRENT_WEEK.start, time: new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(now) };
   try {
     if (supabaseConfig) {
       const query = new URLSearchParams({ on_conflict: 'member_id,week_start' }).toString();
       const rows = await dbRequest('weekly_reports', query, { method: 'POST', prefer: 'resolution=merge-duplicates,return=representation', body: {
         member_id: member.id, week_start: CURRENT_WEEK.start, week_end: CURRENT_WEEK.end, work_type_at_submission: member.type,
-        task_content: report.task, next_week_plan: report.next, leave_note: report.leave, work_category: report.category,
+        ...current, next_work_category: next.work_category || null, next_project_name: next.project_name || null, next_project_client: next.project_client || null,
+        next_assignment_start: next.assignment_start, next_assignment_end: next.assignment_end, next_sales_owner: next.sales_owner || null, next_note: next.note || null,
+        task_content: report.task, next_week_plan: report.next, leave_note: '',
         submitted: true, submitted_at: now.toISOString(), written_by: member.id,
         copied_from_report_id: previousReports[member.name]?.id || null,
       } });
       if (!Array.isArray(rows) || !rows[0]?.id) throw new Error('저장 응답에 보고서가 없습니다. Supabase 테이블 권한과 저장 결과를 확인해 주세요.');
-      report.id = rows[0].id;
+      Object.assign(report, mapReport(rows[0]));
     }
     reports[member.name] = report;
     save(); toast('주간보고를 제출했어요.'); render();
   } catch (error) { console.error('주간보고 저장 실패:', error); toast(`제출하지 못했어요: ${error.message}`); }
+}
+async function saveProjectReport(button) {
+  const row = button.closest('[data-manager-row]');
+  const name = row?.dataset.managerRow;
+  const member = projectStaff().find((item) => item.name === name);
+  if (!member) return toast('프로젝트 근무자 정보를 찾지 못했습니다.');
+  const get = (field) => row.querySelector(`[data-manager-field="${field}"]`)?.value.trim() || '';
+  const current = { work_category: get('work_category'), project_name: get('project_name'), project_client: get('project_client'), assignment_start: get('assignment_start') || null, assignment_end: get('assignment_end') || null, sales_owner: get('sales_owner'), note: get('note') };
+  if (!current.work_category) return toast(`${name}님의 업무구분을 선택해 주세요.`);
+  const manager = currentMember();
+  try {
+    const now = new Date();
+    const report = { ...current, category: current.work_category, project: current.project_name, client: current.project_client, start: current.assignment_start || '', end: current.assignment_end || '', salesOwner: current.sales_owner, note: current.note, task: serializeFields(current), submitted: true, submitted_at: now.toISOString(), week: CURRENT_WEEK.start };
+    if (supabaseConfig) {
+      const query = new URLSearchParams({ on_conflict: 'member_id,week_start' }).toString();
+      const rows = await dbRequest('weekly_reports', query, { method: 'POST', prefer: 'resolution=merge-duplicates,return=representation', body: {
+        member_id: member.id, week_start: CURRENT_WEEK.start, week_end: CURRENT_WEEK.end, work_type_at_submission: 'project', ...current,
+        task_content: report.task, submitted: true, submitted_at: now.toISOString(), written_by: manager.id,
+        copied_from_report_id: previousReports[name]?.id || null,
+      } });
+      if (!rows?.[0]?.id) throw new Error('저장된 보고서를 확인할 수 없습니다.');
+      reports[name] = mapReport(rows[0]);
+    } else reports[name] = report;
+    save(); render(); toast(`${name}님의 프로젝트 보고를 저장했습니다.`);
+  } catch (error) { console.error('프로젝트 보고 저장 실패:', error); toast(`저장하지 못했어요: ${error.message}`); }
+}
+function copyProjectLastWeek(button) {
+  const row = button.closest('[data-manager-row]');
+  const name = row?.dataset.managerRow;
+  const previous = previousReports[name];
+  if (!previous) return toast(`${name}님의 지난 주 보고를 찾지 못했습니다.`);
+  const values = { work_category: previous.category, project_name: previous.project, project_client: previous.client, assignment_start: previous.start, assignment_end: previous.end, sales_owner: previous.salesOwner, note: previous.note };
+  for (const [field, value] of Object.entries(values)) {
+    const input = row.querySelector(`[data-manager-field="${field}"]`); if (input) input.value = value || '';
+  }
+  toast(`${name}님의 지난 주 보고를 입력란에 복사했습니다. 확인 후 저장해 주세요.`);
 }
 async function persistMember(member, isNew = false) {
   if (!supabaseConfig) return;
   const payload = {
     name: member.name, role: member.role, job: member.job, position: member.position || '팀원',
     work_type: member.type, status: member.active ? 'ACTIVE' : 'INACTIVE', is_admin: Boolean(member.isAdmin),
-    project_client: member.client || null, project_name: member.project || null,
-    assignment_start: member.start || null, assignment_end: member.end && /^\d{4}-\d{2}-\d{2}$/.test(member.end) ? member.end : null,
-    note: member.note || null, updated_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
   const result = await dbRequest('members', isNew ? '' : `id=eq.${encodeURIComponent(member.id)}`, {
     method: isNew ? 'POST' : 'PATCH', prefer: 'return=representation', body: payload,
@@ -275,18 +364,52 @@ async function persistMember(member, isNew = false) {
   if (!result?.length) throw new Error('팀원 정보를 저장하지 못했습니다.');
   return mapMember(result[0]);
 }
+async function persistAssignment(member) {
+  if (!supabaseConfig) return;
+  const assignment = assignmentOf(member);
+  const body = {
+    work_type_at_submission: member.type,
+    project_client: assignment.client || null,
+    project_name: assignment.project || null,
+    assignment_start: assignment.start || null,
+    assignment_end: assignment.end && /^\d{4}-\d{2}-\d{2}$/.test(assignment.end) ? assignment.end : null,
+    note: assignment.note || null,
+    updated_at: new Date().toISOString(),
+  };
+  const current = reports[member.name];
+  if (current?.id) {
+    const rows = await dbRequest('weekly_reports', `id=eq.${encodeURIComponent(current.id)}`, { method: 'PATCH', prefer: 'return=representation', body });
+    if (!rows?.length) throw new Error('이번 주 투입 정보를 저장하지 못했습니다.');
+    Object.assign(current, { client: body.project_client || '', project: body.project_name || '', start: body.assignment_start || '', end: body.assignment_end || '', note: body.note || '' });
+    return;
+  }
+  const manager = members.find((candidate) => candidate.active && (candidate.isAdmin || candidate.position === '팀장'));
+  if (!manager?.id) throw new Error('팀장 계정 정보를 찾지 못해 투입 정보를 저장할 수 없습니다.');
+  const rows = await dbRequest('weekly_reports', '', { method: 'POST', prefer: 'return=representation', body: {
+    member_id: member.id, week_start: CURRENT_WEEK.start, week_end: CURRENT_WEEK.end, written_by: manager.id,
+    work_category: member.type === 'project' ? '' : '본사 근무 및 교육', ...body,
+  } });
+  if (!rows?.[0]?.id) throw new Error('이번 주 투입 정보를 저장하지 못했습니다.');
+  reports[member.name] = { ...(current || {}), id: rows[0].id, week: CURRENT_WEEK.start, submitted: false,
+    client: body.project_client || '', project: body.project_name || '', start: body.assignment_start || '', end: body.assignment_end || '', note: body.note || '' };
+}
 async function changeMember(name) {
   const member = members.find((m) => m.name === name); if (!member) return;
   const before = { ...member };
+  const beforeReport = reports[name] ? { ...reports[name] } : null;
+  const assignment = assignmentOf(member);
   const action = prompt(`${name}님의 근무 상태를 변경합니다.\n\n1 = 본사 근무\n2 = 프로젝트 근무\n3 = 퇴사 처리\n\n현재: ${member.type === 'office' ? '본사 근무' : '프로젝트 근무'}`);
-  if (action === '1') { member.type = 'office'; member.client = '본사'; member.project = '본사 근무 및 교육'; member.start = ''; member.end = ''; }
-  else if (action === '2') { const client = prompt('고객명을 입력해 주세요.', member.client || ''); if (client === null) return; const project = prompt('프로젝트명을 입력해 주세요.', member.project || ''); if (project === null) return; member.type = 'project'; member.client = client; member.project = project; member.end = member.end || ''; }
+  if (action === '1') { member.type = 'office'; member.client = ''; member.project = ''; member.start = ''; member.end = ''; member.note = ''; }
+  else if (action === '2') { const client = prompt('고객명을 입력해 주세요.', assignment.client || ''); if (client === null) return; const project = prompt('프로젝트명을 입력해 주세요.', assignment.project || ''); if (project === null) return; const start = prompt('투입일 (YYYY-MM-DD)', assignment.start || toLocalISO(new Date())); if (start === null) return; const end = prompt('철수 예정일 (YYYY-MM-DD)', assignment.end || ''); if (end === null) return; member.type = 'project'; member.client = client; member.project = project; member.start = start; member.end = end; }
   else if (action === '3') member.active = false;
   else return;
+  if (action !== '3' && reports[name]) Object.assign(reports[name], { client: member.client || '', project: member.project || '', start: member.start || '', end: member.end || '', note: member.note || '' });
   try {
-    await persistMember(member); save(); render();
+    await persistMember(member);
+    if (action !== '3') await persistAssignment(member);
+    save(); render();
     toast(action === '3' ? `${name}님을 비활성 처리했어요.` : `${name}님의 근무 상태를 변경했어요.`);
-  } catch (error) { Object.assign(member, before); toast(`저장하지 못했어요: ${error.message}`); }
+  } catch (error) { Object.assign(member, before); if (beforeReport) reports[name] = beforeReport; else delete reports[name]; toast(`저장하지 못했어요: ${error.message}`); }
 }
 async function addMember() {
   const name = prompt('추가할 팀원 이름을 입력해 주세요.'); if (!name?.trim()) return;
@@ -294,11 +417,12 @@ async function addMember() {
   const role = prompt('직급을 입력해 주세요.', '사원'); if (role === null) return;
   const job = prompt('직무를 입력해 주세요.', '개발'); if (job === null) return;
   const mode = prompt('근무 구분을 선택해 주세요.\n1 = 본사 근무\n2 = 프로젝트 근무', '1'); if (mode === null) return;
-  let member = { name: name.trim(), role, job, position: '팀원', type: mode === '2' ? 'project' : 'office', active: true, client: '본사', project: '본사 근무 및 교육' };
-  if (member.type === 'project') { member.client = prompt('고객명', '') || '미정'; member.project = prompt('프로젝트명', '') || '미정'; member.end = prompt('철수 예정일 (YYYY-MM-DD)', '') || ''; }
+  let member = { name: name.trim(), role, job, position: '팀원', type: mode === '2' ? 'project' : 'office', active: true, client: '', project: '' };
+  if (member.type === 'project') { member.client = prompt('고객명', '') || '미정'; member.project = prompt('프로젝트명', '') || '미정'; member.start = prompt('투입일 (YYYY-MM-DD)', toLocalISO(new Date())) || ''; member.end = prompt('철수 예정일 (YYYY-MM-DD)', '') || ''; }
   try {
     const savedMember = await persistMember(member, true);
-    if (savedMember) member = savedMember;
+    if (savedMember) member = { ...member, ...savedMember };
+    if (member.type === 'project') await persistAssignment(member);
     members.push(member); save(); render(); toast(`${member.name}님을 팀원으로 추가했어요.`);
   } catch (error) { toast(`팀원을 추가하지 못했어요: ${error.message}`); }
 }
@@ -329,19 +453,20 @@ function zip(files) {
   return new Blob([...local, ...central, end], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
 function exportXlsx() {
-  const reportRows = [['이름', '직급', '직무', '금주 업무 내용', '차주 업무 계획', '휴가·특이사항', '제출 상태', '제출 시각']];
-  office().forEach((m) => { const r = reports[m.name] || {}; reportRows.push([m.name, m.role, m.job, r.task || '미제출', r.next || '', r.leave || '', statusOf(m) === 'done' ? '제출 완료' : '미제출', r.time || '']); });
-  const rosterRows = [['근무 구분', '이름', '직급', '직무', '직책', '고객', '프로젝트 / 업무', '투입일', '철수 예정일', '비고']];
-  members.filter((m) => m.active).forEach((m) => rosterRows.push([m.type === 'office' ? '본사 근무' : '프로젝트', m.name, m.role, m.job, m.position || '팀원', m.client || '', m.project || '본사 근무 및 교육', m.start || '', m.end || '', m.type === 'project' ? '전주 내용 자동 반영' : statusOf(m) === 'done' ? '보고 제출' : '보고 대기']));
-  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
+  const reportRows = [['순번', '직급', '직무', '성명', '고객사', '프로젝트명', '투입기간(from)', '투입기간(to)', '기타 내용']];
+  members.filter((member) => member.active).forEach((member, index) => {
+    const report = reports[member.name] || {}, assignment = assignmentOf(member);
+    reportRows.push([index + 1, member.role, member.job, member.name, report.client || assignment.client, report.project || assignment.project,
+      report.start || assignment.start, report.end || assignment.end, report.note || assignment.note]);
+  });
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
   const files = {
     '[Content_Types].xml': contentTypes,
     '_rels/.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
-    'xl/workbook.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="주간업무 보고" sheetId="1" r:id="rId1"/><sheet name="인력 현황" sheetId="2" r:id="rId2"/></sheets></workbook>`,
-    'xl/_rels/workbook.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    'xl/workbook.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="주간업무 보고" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    'xl/_rels/workbook.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
     'xl/styles.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="맑은 고딕"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="맑은 고딕"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2758DF"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>`,
-    'xl/worksheets/sheet1.xml': sheetXml(reportRows, [16, 12, 12, 52, 40, 20, 14, 12]),
-    'xl/worksheets/sheet2.xml': sheetXml(rosterRows, [14, 14, 13, 12, 12, 22, 42, 14, 18, 22]),
+    'xl/worksheets/sheet1.xml': sheetXml(reportRows, [8, 14, 13, 14, 25, 40, 16, 16, 40]),
   };
   const blob = zip(files), link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `SI사업2팀_주간업무보고_${CURRENT_WEEK.start.slice(2).replaceAll('-', '.')}_${CURRENT_WEEK.end.slice(5).replaceAll('-', '.')}.xlsx`; link.click(); URL.revokeObjectURL(link.href); toast('상사 보고용 엑셀 파일을 다운로드했어요.');
 }
@@ -359,6 +484,9 @@ document.addEventListener('click', (event) => {
       render();
     }
     if (action === 'copy-last') copyLast();
+    if (action === 'copy-current-to-next') copyCurrentToNext();
+    if (action === 'save-project-report') saveProjectReport(actionButton);
+    if (action === 'copy-project-last') copyProjectLastWeek(actionButton);
     if (action === 'export-xlsx') exportXlsx();
     if (action === 'add-member') addMember();
     if (action === 'change-member') changeMember(actionButton.dataset.name);
