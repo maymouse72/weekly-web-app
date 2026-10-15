@@ -1,0 +1,6 @@
+.env*
+!.env.example
+Project URL&pub key.txt
+.vercel
+node_modules
+dist
