@@ -47,6 +47,7 @@ let members = saved.members
 let reports = saved.reports || Object.fromEntries(Object.entries(sampleReports).map(([name, data]) => [name, { ...data, submitted: true, week: CURRENT_WEEK.start }]));
 let previousReports = {};
 let supabaseConfig = null;
+let authSession = JSON.parse(localStorage.getItem('workweek-auth-session') || 'null');
 let connectionError = '';
 const localPreview = ['localhost', '127.0.0.1'].includes(location.hostname);
 let dataLoading = !localPreview;
@@ -57,16 +58,14 @@ const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector
 const escapeHtml = (v = '') => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 async function dbRequest(table, query = '', options = {}) {
   if (!supabaseConfig) throw new Error('공유 데이터베이스가 연결되지 않았습니다.');
-  const headers = {
-    apikey: supabaseConfig.publishableKey,
-    Authorization: `Bearer ${supabaseConfig.publishableKey}`,
-    'Content-Type': 'application/json',
+  const url = `${supabaseConfig.supabaseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`;
+  const send = () => {
+    const headers = { apikey: supabaseConfig.publishableKey, Authorization: `Bearer ${authSession?.access_token || supabaseConfig.publishableKey}`, 'Content-Type': 'application/json' };
+    if (options.prefer) headers.Prefer = options.prefer;
+    return fetch(url, { method: options.method || 'GET', headers, body: options.body ? JSON.stringify(options.body) : undefined });
   };
-  if (options.prefer) headers.Prefer = options.prefer;
-  const response = await fetch(`${supabaseConfig.supabaseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`, {
-    method: options.method || 'GET', headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  let response = await send();
+  if (response.status === 401 && authSession?.refresh_token) { await refreshAuthSession(); response = await send(); }
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; }
@@ -76,6 +75,13 @@ async function dbRequest(table, query = '', options = {}) {
     throw new Error(detail || data?.error || `Supabase 요청 오류 (${response.status})`);
   }
   return data;
+}
+async function refreshAuthSession() {
+  if (!authSession?.refresh_token) throw new Error('로그인 정보가 만료됐습니다. 다시 로그인해 주세요.');
+  const response = await fetch(`${supabaseConfig.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, { method: 'POST', headers: { apikey: supabaseConfig.publishableKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: authSession.refresh_token }) });
+  const session = await response.json().catch(() => ({}));
+  if (!response.ok) { authSession = null; localStorage.removeItem('workweek-auth-session'); throw new Error('로그인 정보가 만료됐습니다. 다시 로그인해 주세요.'); }
+  authSession = session; localStorage.setItem('workweek-auth-session', JSON.stringify(session)); return session;
 }
 function mapMember(row) {
   return { id: row.id, name: row.name, role: row.role, job: row.job, position: row.position || '팀원', type: row.work_type,
@@ -89,35 +95,65 @@ function mapReport(row) {
     time: row.submitted_at ? new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(row.submitted_at)) : '' };
 }
 async function initializeRemoteData() {
+  const hadAuthSession = Boolean(authSession?.access_token);
   try {
     const configResponse = await fetch('/api/config', { cache: 'no-store' });
     if (!configResponse.ok) throw new Error('Vercel 환경 변수 또는 API 설정을 확인해 주세요.');
     supabaseConfig = await configResponse.json();
-    const previousStartDate = new Date(weekStart); previousStartDate.setDate(previousStartDate.getDate() - 7);
-    const previousStart = toLocalISO(previousStartDate);
     const memberQuery = new URLSearchParams({ select: '*', status: 'eq.ACTIVE', order: 'name.asc' });
-    const reportQuery = new URLSearchParams({ select: '*', week_start: `in.(${CURRENT_WEEK.start},${previousStart})` });
-    const [memberRows, reportRows] = await Promise.all([
-      dbRequest('members', memberQuery.toString()), dbRequest('weekly_reports', reportQuery.toString()),
-    ]);
+    const memberRows = await dbRequest('members', memberQuery.toString());
     members = memberRows.map(mapMember);
-    reports = {}; previousReports = {};
-    const memberNameById = new Map(members.map((member) => [member.id, member.name]));
-    reportRows.forEach((row) => {
-      const name = memberNameById.get(row.member_id); if (!name) return;
-      const report = mapReport(row);
-      if (row.week_start === CURRENT_WEEK.start) reports[name] = report;
-      else previousReports[name] = report;
-    });
+    if (authSession?.access_token) {
+      const user = await fetchAuthUser(authSession.access_token);
+      const member = members.find((item) => user.email === loginEmail(item.name));
+      if (!member) throw new Error('로그인 계정과 팀원 명단이 일치하지 않습니다.');
+      state.currentMemberName = member.name;
+      localStorage.setItem('workweek-current-member', member.name);
+      await loadReports();
+    } else {
+      authSession = null;
+      state.currentMemberName = '';
+      localStorage.removeItem('workweek-current-member');
+      reports = {}; previousReports = {};
+    }
     connectionError = ''; dataLoading = false;
     save(); render();
   } catch (error) {
     console.error('공유 데이터 연결 실패:', error);
     if (localPreview) { dataLoading = false; return; }
     dataLoading = false;
+    if (hadAuthSession && (!authSession || error.message?.includes('로그인 정보'))) {
+      authSession = null; localStorage.removeItem('workweek-auth-session');
+      state.currentMemberName = ''; localStorage.removeItem('workweek-current-member');
+      reports = {}; previousReports = {};
+      connectionError = ''; render();
+      return;
+    }
     connectionError = error.message || '공유 데이터베이스에 연결하지 못했습니다.';
     render();
   }
+}
+const loginEmail = (name) => `member-${Array.from(name).map((char) => char.codePointAt(0).toString(16)).join('')}@weekly.local`;
+async function fetchAuthUser(accessToken) {
+  const response = await fetch(`${supabaseConfig.supabaseUrl}/auth/v1/user`, { headers: { apikey: supabaseConfig.publishableKey, Authorization: `Bearer ${accessToken}` } });
+  const user = await response.json().catch(() => ({}));
+  if (response.status === 401 && authSession?.refresh_token) { const session = await refreshAuthSession(); return fetchAuthUser(session.access_token); }
+  if (!response.ok) throw new Error('로그인 정보가 만료됐습니다. 다시 로그인해 주세요.');
+  return user;
+}
+async function loadReports() {
+  const previousStartDate = new Date(weekStart); previousStartDate.setDate(previousStartDate.getDate() - 7);
+  const previousStart = toLocalISO(previousStartDate);
+  const reportQuery = new URLSearchParams({ select: '*', week_start: `in.(${CURRENT_WEEK.start},${previousStart})` });
+  const reportRows = await dbRequest('weekly_reports', reportQuery.toString());
+  reports = {}; previousReports = {};
+  const memberNameById = new Map(members.map((member) => [member.id, member.name]));
+  reportRows.forEach((row) => {
+    const name = memberNameById.get(row.member_id); if (!name) return;
+    const report = mapReport(row);
+    if (row.week_start === CURRENT_WEEK.start) reports[name] = report;
+    else previousReports[name] = report;
+  });
 }
 const initials = (name) => name.slice(-1);
 const office = () => members.filter((m) => m.active && m.type === 'office');
@@ -247,7 +283,7 @@ function render() {
     $('#crumbTitle').textContent = '이름 로그인';
     $('#currentProfile').innerHTML = '<span class="avatar avatar-blue">?</span><div><strong>로그인 전</strong><small>이름을 선택해 주세요</small></div>';
     $('#topbarAvatar').textContent = '?'; $('#topbarUserName').textContent = '로그인 전'; $('#topbarUser').title = '로그인 전';
-    $('#pageContent').innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><div class="eyebrow" style="margin-top:20px">SI사업2팀 · WEEKLY REPORT</div><h1>이름을 선택해 주세요</h1><p>별도 계정 없이 팀원 이름을 선택해 업무공간에 입장합니다.</p><form id="nameLoginForm"><label class="form-label" for="nameLoginSelect">팀원 이름</label><select class="select-input" id="nameLoginSelect" required><option value="">이름 선택</option>${members.filter((m) => m.active).map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${m.position === '팀장' ? '팀장' : m.type === 'office' ? '본사' : '프로젝트'}</option>`).join('')}</select><button class="button button-primary" style="width:100%;margin-top:13px" type="submit">업무공간 입장 <span>→</span></button></form><small class="login-note">이름 선택은 본인 확인이 아닙니다. URL을 아는 사람은 다른 이름을 선택할 수 있습니다.</small></div></div>`;
+    $('#pageContent').innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><div class="eyebrow" style="margin-top:20px">SI사업2팀 · WEEKLY REPORT</div><h1>로그인해 주세요</h1><p>팀원 이름과 배부받은 초기 비밀번호를 입력해 업무공간에 입장합니다.</p><form id="nameLoginForm"><label class="form-label" for="nameLoginSelect">팀원 이름</label><select class="select-input" id="nameLoginSelect" required><option value="">이름 선택</option>${members.filter((m) => m.active).map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${m.position === '팀장' ? '팀장' : m.type === 'office' ? '본사' : '프로젝트'}</option>`).join('')}</select><label class="form-label login-password-label" for="loginPassword">초기 비밀번호</label><input class="text-input" id="loginPassword" type="password" autocomplete="current-password" required placeholder="초기 비밀번호" /><button class="button button-primary" style="width:100%;margin-top:13px" type="submit">로그인 <span>→</span></button></form><small class="login-note">로그인 계정은 Supabase Auth로 확인됩니다. 비밀번호를 팀원과 공유하지 마세요.</small></div></div>`;
     return;
   }
   $('#sidebar').classList.remove('login-locked');
@@ -487,6 +523,8 @@ document.addEventListener('click', (event) => {
     const action = actionButton.dataset.action;
     if (action === 'go-team') go('team');
     if (action === 'logout') {
+      if (authSession?.access_token && supabaseConfig) fetch(`${supabaseConfig.supabaseUrl}/auth/v1/logout`, { method: 'POST', headers: { apikey: supabaseConfig.publishableKey, Authorization: `Bearer ${authSession.access_token}` } }).catch(() => {});
+      authSession = null; localStorage.removeItem('workweek-auth-session');
       state.currentMemberName = '';
       localStorage.removeItem('workweek-current-member');
       state.page = 'dashboard';
@@ -515,10 +553,23 @@ document.addEventListener('submit', (event) => {
   if (event.target.id !== 'nameLoginForm') return;
   event.preventDefault();
   const member = members.find((m) => m.active && m.name === $('#nameLoginSelect').value);
+  const password = $('#loginPassword').value;
   if (!member) return toast('팀원 이름을 선택해 주세요.');
-  state.currentMemberName = member.name;
-  localStorage.setItem('workweek-current-member', member.name);
-  state.page = 'dashboard'; save(); render();
+  if (!supabaseConfig && localPreview) {
+    state.currentMemberName = member.name; localStorage.setItem('workweek-current-member', member.name);
+    state.page = 'dashboard'; save(); render(); toast('로컬 미리보기: 비밀번호는 확인하지 않습니다.'); return;
+  }
+  if (!supabaseConfig) return toast('공유 로그인 설정이 연결되지 않았습니다. 배포된 앱에서 다시 시도해 주세요.');
+  const submit = event.target.querySelector('[type="submit"]'); submit.disabled = true;
+  fetch(`${supabaseConfig.supabaseUrl}/auth/v1/token?grant_type=password`, { method: 'POST', headers: { apikey: supabaseConfig.publishableKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: loginEmail(member.name), password }) })
+    .then(async (response) => { const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.msg || payload.message || '이름 또는 비밀번호를 확인해 주세요.'); return payload; })
+    .then(async (session) => {
+      if (session.user?.email !== loginEmail(member.name)) throw new Error('선택한 이름의 로그인 정보와 일치하지 않습니다.');
+      authSession = session; localStorage.setItem('workweek-auth-session', JSON.stringify(session));
+      state.currentMemberName = member.name; localStorage.setItem('workweek-current-member', member.name);
+      await loadReports(); state.page = 'dashboard'; save(); render();
+    })
+    .catch((error) => { authSession = null; localStorage.removeItem('workweek-auth-session'); state.currentMemberName = ''; localStorage.removeItem('workweek-current-member'); toast(error.message || '로그인하지 못했습니다.'); submit.disabled = false; });
 });
 document.addEventListener('input', (event) => {
   if (event.target.id === 'teamSearch') { const pos = event.target.selectionStart; state.query = event.target.value; const y = window.scrollY; render(); $('#teamSearch')?.focus(); $('#teamSearch')?.setSelectionRange(pos, pos); window.scrollTo(0, y); }
