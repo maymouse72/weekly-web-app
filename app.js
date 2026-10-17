@@ -8,6 +8,15 @@ const currentDate = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: '
 const CURRENT_WEEK = { start: toLocalISO(weekStart), end: toLocalISO(weekEnd), label: `${weekStart.getMonth() + 1}월 ${weekStart.getDate()}일 — ${weekEnd.getMonth() + 1}월 ${weekEnd.getDate()}일` };
 const deadlineDate = `${weekThursday.getMonth() + 1}월 ${weekThursday.getDate()}일 (목) 오전 11:00`;
 const WORK_CATEGORIES = ['본사 근무 및 교육', '제안', '사업지원', '수행'];
+let installPromptEvent = null;
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  installPromptEvent = event;
+});
+window.addEventListener('appinstalled', () => {
+  installPromptEvent = null;
+  toast('workweek 앱을 홈 화면에 추가했습니다.');
+});
 const names = [
   { name: '김강수', role: '수석', job: 'PM', type: 'office' }, { name: '전희성', role: '수석', job: 'PM', type: 'office' },
   { name: '전용훈', role: '책임', job: '개발', type: 'office' }, { name: '박창준', role: '선임', job: '개발', type: 'office' },
@@ -215,7 +224,7 @@ function dashboard() {
     return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '나의 주간업무와 제출 상태를 확인해 보세요.')}
       <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">MY WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>${me?.type === 'office' ? (submitted ? '이번 주 보고를 제출했어요' : '이번 주 보고를 작성해 주세요') : '프로젝트 근무 중입니다'}</h2><p>${me?.type === 'office' ? '주간보고 내용은 제출 후 팀장이 취합합니다.' : '프로젝트 근무자는 팀장이 전주 내용을 반영합니다'}</p></div><button class="banner-cta" data-page="report">${me?.type === 'office' ? '내 보고서 보기' : '근무 정보 보기'} <span>→</span></button></section>
       <section class="stats-grid"><article class="stat-card"><div class="stat-head">내 제출 상태<span class="stat-icon ${submitted ? 'icon-green' : 'icon-amber'}">${submitted ? '✓' : '◷'}</span></div><div class="stat-value" style="font-size:22px">${me?.type === 'project' ? '자동 반영' : submitted ? '제출 완료' : '작성 대기'}</div><div class="stat-note">${me?.type === 'office' ? (report.time ? `${report.time} 제출` : '목요일 오전 11시 마감') : '팀장이 주간보고에 반영합니다'}</div></article><article class="stat-card"><div class="stat-head">이번 주 보고 기간<span class="stat-icon icon-blue">▦</span></div><div class="stat-value" style="font-size:18px">${CURRENT_WEEK.label}</div><div class="stat-note">월요일부터 금요일까지</div></article></section>
-      <article class="panel"><div class="panel-header"><div><h3>내 주간업무</h3><p class="panel-subtitle">이 화면에서는 본인 보고만 확인할 수 있습니다.</p>${me?.type === 'project' ? `<div class="assignment-summary"><span>고객사<strong>${escapeHtml(assignment.client || '—')}</strong></span><span>프로젝트명<strong>${escapeHtml(assignment.project || '—')}</strong></span><span>투입일자<strong>${assignment.start ? fmtDate(assignment.start) : '—'}</strong></span><span>철수일자<strong>${assignment.end ? fmtDate(assignment.end) : '—'}</strong></span></div>` : ''}</div>${me?.type === 'office' ? '<button class="text-link" data-page="report">보고서 작성 →</button>' : ''}</div>${me?.type === 'office' ? `<div class="office-work-summary">${report.category || report.project || report.client ? workLines.map(([label, value]) => `<div class="weekly-work-line"><span>${label}</span><strong>${escapeHtml(value || '—')}</strong></div>`).join('') : '<div class="empty-state">아직 제출한 보고가 없습니다.</div>'}${nextPlan ? `<small class="next-plan-line">차주 계획: ${escapeHtml(nextPlan)}</small>` : ''}</div>` : `<div class="activity-item"><div><strong>${escapeHtml(report.task || '프로젝트 근무는 팀장이 전주 내용을 반영합니다.')}</strong></div></div>`}</article>`;
+      <article class="panel"><div class="panel-header"><div><h3>내 주간업무</h3><p class="panel-subtitle">이 화면에서는 본인 보고만 확인할 수 있습니다.</p>${me?.type === 'project' ? `<div class="assignment-summary"><span>고객사<strong>${escapeHtml(assignment.client || '—')}</strong></span><span>프로젝트명<strong>${escapeHtml(assignment.project || '—')}</strong></span><span>투입일자<strong>${assignment.start ? fmtDate(assignment.start) : '—'}</strong></span><span>철수일자<strong>${assignment.end ? fmtDate(assignment.end) : '—'}</strong></span></div>` : ''}</div>${me?.type === 'office' ? '<button class="text-link" data-page="report">보고서 작성 →</button>' : ''}</div>${me?.type === 'office' ? `<div class="office-work-summary">${report.category || report.project || report.client ? workLines.map(([label, value]) => `<div class="weekly-work-line"><span>${label}</span><strong>${escapeHtml(value || '—')}</strong></div>`).join('') : '<div class="empty-state">아직 제출한 보고가 없습니다.</div>'}${nextPlan ? `<small class="next-plan-line">차주 계획: ${escapeHtml(nextPlan)}</small>` : ''}</div>` : `<div class="activity-item"><div><small class="project-work-detail">${escapeHtml(report.task || '프로젝트 근무는 팀장이 전주 내용을 반영합니다.')}</small></div></div>`}</article>`;
   }
   const done = office().filter((m) => statusOf(m) === 'done').length;
   const pending = office().length - done;
@@ -244,10 +253,10 @@ function teamPage() {
   let list = members.filter((m) => m.active);
   if (state.memberFilter === 'office' || state.memberFilter === 'project') list = list.filter((m) => m.type === state.memberFilter);
   if (state.query) list = list.filter((m) => { const a = assignmentOf(m); return `${m.name} ${m.role} ${a.client} ${a.project}`.toLowerCase().includes(state.query.toLowerCase()); });
-  const rows = list.map((m, i) => { const a = assignmentOf(m); return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}${m.position === '팀장' ? ' · 팀장' : ''}</small></div></div></td><td>${m.type === 'office' ? '<span class="badge badge-neutral">본사 근무</span>' : '<span class="badge badge-auto">프로젝트</span>'}</td><td>${escapeHtml(a.client || '—')}</td><td>${escapeHtml(a.project || '본사 근무 및 교육')}</td><td>${m.type === 'office' ? badge(statusOf(m)) : `<span class="table-muted">${a.end ? fmtDate(a.end) : '—'} 철수 예정</span>`}</td>${manager ? `<td><button class="text-link" data-action="change-member" data-name="${escapeHtml(m.name)}">상태 변경</button></td>` : ''}</tr>`; }).join('');
+  const rows = list.map((m, i) => { const a = assignmentOf(m); return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}${m.position === '팀장' ? ' · 팀장' : ''}</small></div></div></td><td>${m.type === 'office' ? '<span class="badge badge-neutral">본사 근무</span>' : '<span class="badge badge-auto">프로젝트</span>'}</td><td>${escapeHtml(a.client || '—')}</td><td>${escapeHtml(a.project || '본사 근무 및 교육')}</td><td>${a.start ? fmtDate(a.start) : '—'}</td><td>${a.end ? fmtDate(a.end) : '—'}</td>${manager ? `<td><button class="text-link" data-action="change-member" data-name="${escapeHtml(m.name)}">상태 변경</button></td>` : ''}</tr>`; }).join('');
   return `${heading('TEAM DIRECTORY', '팀원 현황', `팀원 근무 구분과 프로젝트 현황을 확인할 수 있습니다. 현재 ${members.filter((m) => m.active).length}명`, manager ? '<button class="button button-primary" data-action="add-member">＋ 팀원 추가</button>' : '')}
     <div class="toolbar"><div class="filter-tabs"><button class="filter-tab ${state.memberFilter === 'all' ? 'active' : ''}" data-filter="all">전체 ${members.filter((m) => m.active).length}</button><button class="filter-tab ${state.memberFilter === 'office' ? 'active' : ''}" data-filter="office">본사 ${office().length}</button><button class="filter-tab ${state.memberFilter === 'project' ? 'active' : ''}" data-filter="project">프로젝트 ${projectStaff().length}</button></div><label class="search-box"><span>⌕</span><input id="teamSearch" value="${escapeHtml(state.query)}" placeholder="이름, 프로젝트 검색" /></label></div>
-    <div class="table-wrap"><table class="data-table"><thead><tr><th>팀원</th><th>근무 구분</th><th>고객</th><th>프로젝트 / 업무</th><th>보고 / 철수 예정</th>${manager ? '<th></th>' : ''}</tr></thead><tbody>${rows || `<tr><td colspan="${manager ? 6 : 5}"><div class="empty-state">검색 결과가 없습니다.</div></td></tr>`}</tbody></table></div>`;
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>팀원</th><th>근무 구분</th><th>고객</th><th>프로젝트 / 업무</th><th>투입일자</th><th>철수(예정)일자</th>${manager ? '<th></th>' : ''}</tr></thead><tbody>${rows || `<tr><td colspan="${manager ? 7 : 6}"><div class="empty-state">검색 결과가 없습니다.</div></td></tr>`}</tbody></table></div>`;
 }
 function adminPage() {
   const done = office().filter((m) => statusOf(m) === 'done').length, pending = office().length - done;
@@ -263,7 +272,7 @@ function adminPage() {
 }
 function settingsPage() {
   return `${heading('PREFERENCES', '알림 설정', '마감 알림을 받을 시간과 방법을 설정해요.')}
-    <div class="settings-grid"><article class="settings-card"><h3>주간보고 마감 알림</h3><p>목요일 오전에 주간보고 작성 알림을 받아요.</p><div class="setting-row"><div><strong>브라우저 알림</strong><small>이 기기에서 알림 표시 (앱이 실행 중일 때)</small></div><input class="toggle" type="checkbox" id="pushToggle" ${localStorage.getItem('workweek-notify') === 'on' ? 'checked' : ''} /></div><div class="setting-row"><div><strong>알림 시각</strong><small>목요일 오전 기준</small></div><input class="text-input" type="time" id="notifyTime" value="${localStorage.getItem('workweek-time') || '09:00'}" style="width:112px;padding:7px" /></div><div class="setting-row"><div><strong>주간보고 마감</strong><small>팀 공통 마감 시간</small></div><span class="meta-chip">목요일 오전 11:00</span></div><button class="button button-primary" data-action="save-settings" style="margin-top:12px">설정 저장</button></article><article class="settings-card"><h3>앱 설치 및 데이터</h3><p>홈 화면에 추가하면 앱처럼 빠르게 열 수 있어요.</p><div class="setting-row"><div><strong>홈 화면에 추가</strong><small>브라우저 메뉴에서 “앱 설치” 또는 “홈 화면에 추가” 선택</small></div><span class="stat-icon icon-blue">＋</span></div><div class="setting-row"><div><strong>저장 위치</strong><small>${supabaseConfig ? '팀원이 함께 사용하는 Supabase 공유 데이터베이스' : '현재 브라우저와 기기의 로컬 저장소'}</small></div><span class="badge badge-neutral">${supabaseConfig ? '공유 저장' : '이 기기'}</span></div><div class="aside-tip" style="margin-top:13px">${supabaseConfig ? '보고서와 팀원 정보는 Supabase에 공유 저장됩니다. 앱을 닫아도 받는 PWA 푸시 알림은 다음 단계에서 연결해야 합니다.' : '로컬 미리보기에서는 브라우저 저장소와 이 기기 알림을 사용합니다.'}</div></article></div>`;
+    <div class="settings-grid"><article class="settings-card"><h3>주간보고 마감 알림</h3><p>목요일 오전에 주간보고 작성 알림을 받아요.</p><div class="setting-row"><div><strong>브라우저 알림</strong><small>이 기기에서 알림 표시 (앱이 실행 중일 때)</small></div><input class="toggle" type="checkbox" id="pushToggle" ${localStorage.getItem('workweek-notify') === 'on' ? 'checked' : ''} /></div><div class="setting-row"><div><strong>알림 시각</strong><small>목요일 오전 기준</small></div><input class="text-input" type="time" id="notifyTime" value="${localStorage.getItem('workweek-time') || '09:00'}" style="width:112px;padding:7px" /></div><div class="setting-row"><div><strong>주간보고 마감</strong><small>팀 공통 마감 시간</small></div><span class="meta-chip">목요일 오전 11:00</span></div><button class="button button-primary" data-action="save-settings" style="margin-top:12px">설정 저장</button></article><article class="settings-card"><h3>앱 설치 및 데이터</h3><p>홈 화면에 추가하면 앱처럼 빠르게 열 수 있어요.</p><button type="button" class="setting-row install-app-row" data-action="install-app"><span><strong>홈 화면에 추가</strong><small>버튼을 눌러 설치를 시작하거나 브라우저별 안내를 확인하세요.</small></span><span class="stat-icon icon-blue" aria-hidden="true">＋</span></button><div class="setting-row"><div><strong>저장 위치</strong><small>${supabaseConfig ? '팀원이 함께 사용하는 Supabase 공유 데이터베이스' : '현재 브라우저와 기기의 로컬 저장소'}</small></div><span class="badge badge-neutral">${supabaseConfig ? '공유 저장' : '이 기기'}</span></div><div class="aside-tip" style="margin-top:13px">${supabaseConfig ? '보고서와 팀원 정보는 Supabase에 공유 저장됩니다. 앱을 닫아도 받는 PWA 푸시 알림은 다음 단계에서 연결해야 합니다.' : '로컬 미리보기에서는 브라우저 저장소와 이 기기 알림을 사용합니다.'}</div></article></div>`;
 }
 function render() {
   const signedIn = Boolean(currentMember() && (localPreview || authSession?.access_token));
@@ -312,6 +321,21 @@ function go(page) {
   save(); render(); window.scrollTo(0, 0);
 }
 function toast(message) { const node = document.createElement('div'); node.className = 'toast'; node.textContent = message; $('#toastRegion').appendChild(node); setTimeout(() => node.remove(), 3000); }
+async function installApp() {
+  if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) return toast('이미 홈 화면에 추가된 앱으로 실행 중입니다.');
+  if (installPromptEvent) {
+    const promptEvent = installPromptEvent;
+    installPromptEvent = null;
+    await promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
+    toast(choice?.outcome === 'accepted' ? '앱 설치를 시작했습니다.' : '설치를 취소했습니다.');
+    return;
+  }
+  const ua = navigator.userAgent;
+  if (/iphone|ipad|ipod/i.test(ua)) toast('Safari의 공유 버튼을 누른 뒤 “홈 화면에 추가”를 선택해 주세요.');
+  else if (/android/i.test(ua)) toast('브라우저 메뉴(⋮)에서 “앱 설치” 또는 “홈 화면에 추가”를 선택해 주세요.');
+  else toast('주소창의 설치 아이콘 또는 브라우저 메뉴에서 “앱 설치”를 선택해 주세요.');
+}
 function copyLast() {
   const me = members.find((m) => m.name === state.currentMemberName); if (!me) return toast('지난주 보고 내용을 찾지 못했어요.');
   const previous = previousReports[me.name] || (localPreview ? sampleReports[me.name] : null);
@@ -541,6 +565,7 @@ document.addEventListener('click', (event) => {
     if (action === 'save-project-report') saveProjectReport(actionButton);
     if (action === 'copy-project-last') copyProjectLastWeek(actionButton);
     if (action === 'export-xlsx') exportXlsx();
+    if (action === 'install-app') installApp().catch((error) => { console.error('앱 설치 안내 실패:', error); toast('브라우저 메뉴에서 “앱 설치” 또는 “홈 화면에 추가”를 선택해 주세요.'); });
     if (action === 'add-member') addMember();
     if (action === 'change-member') changeMember(actionButton.dataset.name);
     if (action === 'save-settings') {

@@ -13,3 +13,7 @@
 @media(max-width:900px){.manager-report-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.manager-report-field-wide{grid-column:1/-1}}
 @media(max-width:560px){.manager-report-fields{grid-template-columns:1fr}.manager-report-field-wide{grid-column:auto}.manager-report-actions{flex-direction:column}.manager-report-actions .button{width:100%}.topbar-user-name{display:none}}
 .login-screen{min-height:calc(100vh - 150px);display:grid;place-items:center;padding:25px}.login-card{width:min(100%,440px);padding:28px;background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow)}.login-card .brand-mark{margin-bottom:18px}.login-card h1{margin:10px 0;font-size:24px;letter-spacing:-.7px}.login-card>p{font-size:11px;line-height:1.7;color:#7d8795;margin:0 0 20px}.login-card .form-label{margin:14px 0 7px}.login-card .text-input,.login-card .select-input{font-size:12px;padding:11px}.login-note{display:block;margin-top:14px;font-size:9px;line-height:1.6;color:#919aa7}
+.project-work-detail{display:block;margin-top:13px;color:#7d8795;font-size:9px;font-weight:400;line-height:1.6;white-space:pre-line;overflow-wrap:anywhere}
+.setting-row.install-app-row{width:100%;border:0;border-top:1px solid #f0f2f5;background:transparent;color:inherit;text-align:left;cursor:pointer}
+.setting-row.install-app-row:hover{background:#f8f9fc}
+.setting-row.install-app-row:focus-visible{outline:2px solid #91aaf3;outline-offset:2px;border-radius:5px}
