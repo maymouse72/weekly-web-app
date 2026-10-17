@@ -240,13 +240,14 @@ function managerReportPage() {
   return `${heading('MANAGER WORKSPACE', '프로젝트 주간보고 작성', `${CURRENT_WEEK.label} 프로젝트 근무자 보고를 팀장이 입력합니다.`)}<article class="panel manager-report-panel"><p class="panel-subtitle">각 팀원의 업무 정보를 입력하고 저장하세요. 지난 주 내용을 가져온 뒤 이번 주 내용을 수정할 수 있습니다.</p><div class="manager-report-list">${rows || '<div class="empty-state">프로젝트 근무자가 없습니다.</div>'}</div></article>`;
 }
 function teamPage() {
+  const manager = isManager();
   let list = members.filter((m) => m.active);
   if (state.memberFilter === 'office' || state.memberFilter === 'project') list = list.filter((m) => m.type === state.memberFilter);
   if (state.query) list = list.filter((m) => { const a = assignmentOf(m); return `${m.name} ${m.role} ${a.client} ${a.project}`.toLowerCase().includes(state.query.toLowerCase()); });
-  const rows = list.map((m, i) => { const a = assignmentOf(m); return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}${m.position === '팀장' ? ' · 팀장' : ''}</small></div></div></td><td>${m.type === 'office' ? '<span class="badge badge-neutral">본사 근무</span>' : '<span class="badge badge-auto">프로젝트</span>'}</td><td>${escapeHtml(a.client || '—')}</td><td>${escapeHtml(a.project || '본사 근무 및 교육')}</td><td>${m.type === 'office' ? badge(statusOf(m)) : `<span class="table-muted">${a.end ? fmtDate(a.end) : '—'} 철수 예정</span>`}</td><td><button class="text-link" data-action="change-member" data-name="${escapeHtml(m.name)}">상태 변경</button></td></tr>`; }).join('');
-  return `${heading('TEAM DIRECTORY', '팀원 현황', `본사와 프로젝트 인력을 확인하고 근무 상태 변경을 관리해요. 현재 ${members.filter((m) => m.active).length}명`, '<button class="button button-primary" data-action="add-member">＋ 팀원 추가</button>')}
+  const rows = list.map((m, i) => { const a = assignmentOf(m); return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}${m.position === '팀장' ? ' · 팀장' : ''}</small></div></div></td><td>${m.type === 'office' ? '<span class="badge badge-neutral">본사 근무</span>' : '<span class="badge badge-auto">프로젝트</span>'}</td><td>${escapeHtml(a.client || '—')}</td><td>${escapeHtml(a.project || '본사 근무 및 교육')}</td><td>${m.type === 'office' ? badge(statusOf(m)) : `<span class="table-muted">${a.end ? fmtDate(a.end) : '—'} 철수 예정</span>`}</td>${manager ? `<td><button class="text-link" data-action="change-member" data-name="${escapeHtml(m.name)}">상태 변경</button></td>` : ''}</tr>`; }).join('');
+  return `${heading('TEAM DIRECTORY', '팀원 현황', `팀원 근무 구분과 프로젝트 현황을 확인할 수 있습니다. 현재 ${members.filter((m) => m.active).length}명`, manager ? '<button class="button button-primary" data-action="add-member">＋ 팀원 추가</button>' : '')}
     <div class="toolbar"><div class="filter-tabs"><button class="filter-tab ${state.memberFilter === 'all' ? 'active' : ''}" data-filter="all">전체 ${members.filter((m) => m.active).length}</button><button class="filter-tab ${state.memberFilter === 'office' ? 'active' : ''}" data-filter="office">본사 ${office().length}</button><button class="filter-tab ${state.memberFilter === 'project' ? 'active' : ''}" data-filter="project">프로젝트 ${projectStaff().length}</button></div><label class="search-box"><span>⌕</span><input id="teamSearch" value="${escapeHtml(state.query)}" placeholder="이름, 프로젝트 검색" /></label></div>
-    <div class="table-wrap"><table class="data-table"><thead><tr><th>팀원</th><th>근무 구분</th><th>고객</th><th>프로젝트 / 업무</th><th>보고 / 철수 예정</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6"><div class="empty-state">검색 결과가 없습니다.</div></td></tr>'}</tbody></table></div>`;
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>팀원</th><th>근무 구분</th><th>고객</th><th>프로젝트 / 업무</th><th>보고 / 철수 예정</th>${manager ? '<th></th>' : ''}</tr></thead><tbody>${rows || `<tr><td colspan="${manager ? 6 : 5}"><div class="empty-state">검색 결과가 없습니다.</div></td></tr>`}</tbody></table></div>`;
 }
 function adminPage() {
   const done = office().filter((m) => statusOf(m) === 'done').length, pending = office().length - done;
@@ -265,6 +266,9 @@ function settingsPage() {
     <div class="settings-grid"><article class="settings-card"><h3>주간보고 마감 알림</h3><p>목요일 오전에 주간보고 작성 알림을 받아요.</p><div class="setting-row"><div><strong>브라우저 알림</strong><small>이 기기에서 알림 표시 (앱이 실행 중일 때)</small></div><input class="toggle" type="checkbox" id="pushToggle" ${localStorage.getItem('workweek-notify') === 'on' ? 'checked' : ''} /></div><div class="setting-row"><div><strong>알림 시각</strong><small>목요일 오전 기준</small></div><input class="text-input" type="time" id="notifyTime" value="${localStorage.getItem('workweek-time') || '09:00'}" style="width:112px;padding:7px" /></div><div class="setting-row"><div><strong>주간보고 마감</strong><small>팀 공통 마감 시간</small></div><span class="meta-chip">목요일 오전 11:00</span></div><button class="button button-primary" data-action="save-settings" style="margin-top:12px">설정 저장</button></article><article class="settings-card"><h3>앱 설치 및 데이터</h3><p>홈 화면에 추가하면 앱처럼 빠르게 열 수 있어요.</p><div class="setting-row"><div><strong>홈 화면에 추가</strong><small>브라우저 메뉴에서 “앱 설치” 또는 “홈 화면에 추가” 선택</small></div><span class="stat-icon icon-blue">＋</span></div><div class="setting-row"><div><strong>저장 위치</strong><small>${supabaseConfig ? '팀원이 함께 사용하는 Supabase 공유 데이터베이스' : '현재 브라우저와 기기의 로컬 저장소'}</small></div><span class="badge badge-neutral">${supabaseConfig ? '공유 저장' : '이 기기'}</span></div><div class="aside-tip" style="margin-top:13px">${supabaseConfig ? '보고서와 팀원 정보는 Supabase에 공유 저장됩니다. 앱을 닫아도 받는 PWA 푸시 알림은 다음 단계에서 연결해야 합니다.' : '로컬 미리보기에서는 브라우저 저장소와 이 기기 알림을 사용합니다.'}</div></article></div>`;
 }
 function render() {
+  const signedIn = Boolean(currentMember() && (localPreview || authSession?.access_token));
+  $$('[data-page="team"]').forEach((el) => { el.hidden = !signedIn; });
+  $$('[data-page="admin"]').forEach((el) => { el.hidden = !signedIn || !isManager(); });
   if (dataLoading) {
     $('#sidebar').classList.add('login-locked');
     $('#crumbTitle').textContent = '공유 데이터 연결';
@@ -288,8 +292,9 @@ function render() {
   }
   $('#sidebar').classList.remove('login-locked');
   const manager = isManager();
-  $$('[data-page="team"], [data-page="admin"]').forEach((el) => { el.hidden = !manager; });
-  if (!manager && ['team', 'admin'].includes(state.page)) state.page = 'dashboard';
+  $$('[data-page="team"]').forEach((el) => { el.hidden = false; });
+  $$('[data-page="admin"]').forEach((el) => { el.hidden = !manager; });
+  if (!manager && state.page === 'admin') state.page = 'dashboard';
   header(pageTitles[state.page] || '대시보드');
   $('#periodPill').innerHTML = `<span class="status-dot"></span>${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}`;
   $('#deadlineText').textContent = toLocalISO(new Date()) === toLocalISO(weekThursday) ? '오늘 오전 11:00' : deadlineDate;
@@ -299,7 +304,8 @@ function render() {
   if ($('#sidebar').classList.contains('open')) { const node = document.createElement('div'); node.className = 'mobile-overlay visible'; node.id = 'mobileOverlay'; document.body.appendChild(node); }
 }
 function go(page) {
-  if (!isManager() && ['team', 'admin'].includes(page)) page = 'dashboard';
+  if (!currentMember()) { toast('먼저 팀원 로그인해 주세요.'); return; }
+  if (!isManager() && page === 'admin') page = 'dashboard';
   state.page = page;
   if (page !== 'team') state.query = '';
   if (window.innerWidth <= 760) $('#sidebar').classList.remove('open');
