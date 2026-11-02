@@ -8,7 +8,7 @@ const currentDate = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: '
 const CURRENT_WEEK = { start: toLocalISO(weekStart), end: toLocalISO(weekEnd), label: `${weekStart.getMonth() + 1}월 ${weekStart.getDate()}일 — ${weekEnd.getMonth() + 1}월 ${weekEnd.getDate()}일` };
 const deadlineDate = `${weekThursday.getMonth() + 1}월 ${weekThursday.getDate()}일 (목) 오전 11:00`;
 const WORK_CATEGORIES = ['본사 근무 및 교육', '제안', '사업지원', '수행'];
-const MEMBER_ROLE_ORDER = ['사원', '주임', '전임', '선임', '책임', '수석', '전문위원'];
+const MEMBER_ROLE_ORDER = ['전문위원', '수석', '책임', '선임', '전임', '주임', '사원'];
 function sortMembersForDirectory(list) {
   return [...list].sort((a, b) => {
     if (Boolean(a.isAdmin || a.position === '팀장') !== Boolean(b.isAdmin || b.position === '팀장')) return a.isAdmin || a.position === '팀장' ? -1 : 1;
@@ -209,8 +209,8 @@ async function loadReportHistory() {
   });
 }
 const initials = (name) => name.slice(-1);
-const office = () => members.filter((m) => m.active && m.type === 'office');
-const projectStaff = () => members.filter((m) => m.active && m.type === 'project');
+const office = () => sortMembersForDirectory(members.filter((m) => m.active && m.type === 'office'));
+const projectStaff = () => sortMembersForDirectory(members.filter((m) => m.active && m.type === 'project'));
 const currentMember = () => members.find((m) => m.active && m.name === state.currentMemberName);
 const isManager = () => Boolean(currentMember()?.isAdmin || currentMember()?.position === '팀장');
 const assignmentOf = (member) => {
@@ -272,10 +272,11 @@ function dashboard() {
   }
   const done = office().filter((m) => statusOf(m) === 'done').length;
   const pending = office().length - done;
+  const activityMembers = sortMembersForDirectory(office().filter((m) => statusOf(m) === 'done').slice(-3));
   return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '이번 주 팀 보고를 확인하고 프로젝트 근무자 보고를 작성해 주세요.', '<button class="button" data-page="history">과거 보고서 보기</button><button class="button" data-action="go-team">팀원 현황</button>')}
     <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>이번 주 보고, 목요일 오전 11시까지</h2><p>프로젝트 근무자 보고를 입력하고 상사 보고용 취합본을 준비해 주세요.</p></div><button class="banner-cta" data-page="report">보고서 작성하기 <span>→</span></button></section>
     <section class="stats-grid"><article class="stat-card"><div class="stat-head">팀 전체 인원<span class="stat-icon icon-blue">♧</span></div><div class="stat-value">${members.filter((m) => m.active).length}<small> 명</small></div><div class="stat-note">본사 ${office().length}명 · 프로젝트 ${projectStaff().length}명</div></article><article class="stat-card"><div class="stat-head">본사 보고 제출<span class="stat-icon icon-green">✓</span></div><div class="stat-value">${done}<small> / ${office().length}</small></div><div class="stat-note">목요일 오전 11시 마감</div></article><article class="stat-card"><div class="stat-head">작성 대기<span class="stat-icon icon-amber">◷</span></div><div class="stat-value">${pending}<small> 명</small></div><div class="stat-note">본사 근무자 보고 필요</div></article><article class="stat-card"><div class="stat-head">프로젝트 인력<span class="stat-icon icon-gray">↗</span></div><div class="stat-value">${projectStaff().length}<small> 명</small></div><div class="stat-note">전주 내용 자동 반영</div></article></section>
-    <section class="content-grid"><article class="panel"><div class="panel-header"><div><h3>보고 제출 현황</h3><p class="panel-subtitle">본사 근무자는 매주 직접 제출해요</p></div><button class="text-link" data-page="admin">전체 보기 →</button></div><div class="submission-list">${submissionRows()}</div><div class="progress-wrap"><div class="progress-label"><span>제출 진행률</span><strong>${office().length ? Math.round(done / office().length * 100) : 0}%</strong></div><div class="progress-track"><div class="progress-fill" style="width:${office().length ? done / office().length * 100 : 0}%"></div></div></div></article><div class="side-panel"><article class="reminder-card"><div class="reminder-top"><h3>다음 마감 일정</h3><span class="badge badge-pending">오늘 마감</span></div><p>본사 근무자 주간업무 보고 제출 마감입니다.</p><div class="reminder-date"><span>이번 주 보고</span><strong>오늘 오전 11:00</strong></div></article><article class="activity-card"><div class="panel-header"><div><h3>팀 보고 활동</h3><p class="panel-subtitle">이번 주 업데이트</p></div><span class="stat-icon icon-green">↗</span></div>${office().filter((m) => statusOf(m) === 'done').slice(-3).reverse().map((m, i) => `<div class="activity-item"><span class="activity-dot"></span><div><small><strong>${escapeHtml(m.name)}</strong>님이 주간보고를 제출했어요</small><time>${reports[m.name]?.time || '10:32'} · 오늘</time></div></div>`).join('')}</article></div></section>`;
+    <section class="content-grid"><article class="panel"><div class="panel-header"><div><h3>보고 제출 현황</h3><p class="panel-subtitle">본사 근무자는 매주 직접 제출해요</p></div><button class="text-link" data-page="admin">전체 보기 →</button></div><div class="submission-list">${submissionRows()}</div><div class="progress-wrap"><div class="progress-label"><span>제출 진행률</span><strong>${office().length ? Math.round(done / office().length * 100) : 0}%</strong></div><div class="progress-track"><div class="progress-fill" style="width:${office().length ? done / office().length * 100 : 0}%"></div></div></div></article><div class="side-panel"><article class="reminder-card"><div class="reminder-top"><h3>다음 마감 일정</h3><span class="badge badge-pending">오늘 마감</span></div><p>본사 근무자 주간업무 보고 제출 마감입니다.</p><div class="reminder-date"><span>이번 주 보고</span><strong>오늘 오전 11:00</strong></div></article><article class="activity-card"><div class="panel-header"><div><h3>팀 보고 활동</h3><p class="panel-subtitle">이번 주 업데이트</p></div><span class="stat-icon icon-green">↗</span></div>${activityMembers.map((m) => `<div class="activity-item"><span class="activity-dot"></span><div><small><strong>${escapeHtml(m.name)}</strong>님이 주간보고를 제출했어요</small><time>${reports[m.name]?.time || '10:32'} · 오늘</time></div></div>`).join('')}</article></div></section>`;
 }
 function reportPage() {
   const me = members.find((m) => m.name === state.currentMemberName) || office()[0] || { name: '팀원', type: 'office', role: '', job: '' };
@@ -297,6 +298,8 @@ function historyPage() {
   const filtered = reportHistory.filter((report) => (state.historyYearFilter === 'all' || report.week?.startsWith(state.historyYearFilter))
     && (state.historyMonthFilter === 'all' || report.week?.slice(5, 7) === state.historyMonthFilter)
     && (!isManager() || state.historyMemberFilter === 'all' || report.memberName === state.historyMemberFilter));
+  const memberOrder = new Map(sortMembersForDirectory(members).map((member, index) => [member.name, index]));
+  filtered.sort((a, b) => String(b.week || '').localeCompare(String(a.week || '')) || (memberOrder.get(a.memberName) ?? Number.MAX_SAFE_INTEGER) - (memberOrder.get(b.memberName) ?? Number.MAX_SAFE_INTEGER));
   const filters = `<div class="toolbar history-toolbar"><div class="history-filters"><label class="history-filter"><span>연도</span><select class="select-input" id="historyYearFilter"><option value="all">전체 연도</option>${years.map((year) => `<option value="${escapeHtml(year)}" ${state.historyYearFilter === year ? 'selected' : ''}>${escapeHtml(year)}년</option>`).join('')}</select></label><label class="history-filter"><span>월</span><select class="select-input" id="historyMonthFilter"><option value="all">전체 월</option>${months.map((month) => `<option value="${escapeHtml(month)}" ${state.historyMonthFilter === month ? 'selected' : ''}>${Number(month)}월</option>`).join('')}</select></label>${isManager() ? `<label class="history-filter"><span>팀원</span><select class="select-input" id="historyMemberFilter"><option value="all">전체 팀원</option>${availableMembers.map((name) => `<option value="${escapeHtml(name)}" ${state.historyMemberFilter === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></label>` : ''}</div><button class="button" data-action="refresh-history">새로고침</button></div>`;
   const entries = filtered.map((report) => {
     const end = report.weekEnd || (() => { const date = new Date(`${report.week}T00:00:00`); date.setDate(date.getDate() + 4); return toLocalISO(date); })();
@@ -623,7 +626,7 @@ function zip(files) {
 }
 function exportXlsx() {
   const reportRows = [['순번', '직급', '직무', '성명', '고객사', '프로젝트명', '투입기간(from)', '투입기간(to)', '기타 내용']];
-  members.filter((member) => member.active).forEach((member, index) => {
+  sortMembersForDirectory(members.filter((member) => member.active)).forEach((member, index) => {
     const report = reports[member.name] || {}, assignment = assignmentOf(member);
     reportRows.push([index + 1, member.role, member.job, member.name, report.client || assignment.client, report.project || assignment.project,
       report.start || assignment.start, report.end || assignment.end, report.note || assignment.note]);
