@@ -8,6 +8,15 @@ const currentDate = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: '
 const CURRENT_WEEK = { start: toLocalISO(weekStart), end: toLocalISO(weekEnd), label: `${weekStart.getMonth() + 1}월 ${weekStart.getDate()}일 — ${weekEnd.getMonth() + 1}월 ${weekEnd.getDate()}일` };
 const deadlineDate = `${weekThursday.getMonth() + 1}월 ${weekThursday.getDate()}일 (목) 오전 11:00`;
 const WORK_CATEGORIES = ['본사 근무 및 교육', '제안', '사업지원', '수행'];
+const MEMBER_ROLE_ORDER = ['전문위원', '수석', '책임', '선임', '전임', '주임', '사원'];
+function sortMembersForDirectory(list) {
+  return [...list].sort((a, b) => {
+    if (Boolean(a.isAdmin || a.position === '팀장') !== Boolean(b.isAdmin || b.position === '팀장')) return a.isAdmin || a.position === '팀장' ? -1 : 1;
+    const rankDiff = MEMBER_ROLE_ORDER.indexOf(a.role) - MEMBER_ROLE_ORDER.indexOf(b.role);
+    if (rankDiff && MEMBER_ROLE_ORDER.includes(a.role) && MEMBER_ROLE_ORDER.includes(b.role)) return rankDiff;
+    return String(b.name || '').localeCompare(String(a.name || ''), 'ko');
+  });
+}
 let installPromptEvent = null;
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();
@@ -65,7 +74,7 @@ let authSession = JSON.parse(localStorage.getItem('workweek-auth-session') || 'n
 let connectionError = '';
 const localPreview = ['localhost', '127.0.0.1'].includes(location.hostname);
 let dataLoading = !localPreview;
-let state = { page: 'dashboard', memberFilter: 'all', query: '', historyMemberFilter: 'all', historyYearFilter: 'all', currentMemberName: localStorage.getItem('workweek-current-member') || '', ...(saved.ui || {}) };
+let state = { page: 'dashboard', memberFilter: 'all', query: '', historyMemberFilter: 'all', historyYearFilter: 'all', historyMonthFilter: 'all', currentMemberName: localStorage.getItem('workweek-current-member') || '', ...(saved.ui || {}) };
 const pageTitles = { dashboard: '대시보드', report: '주간보고 작성', history: '과거 보고서', team: '팀 현황', admin: '취합 및 내보내기', settings: '알림 설정' };
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -220,7 +229,7 @@ function reportFieldsFromForm(form, scope) {
   return { work_category: get('work_category'), project_name: get('project_name'), project_client: get('project_client'), assignment_start: get('assignment_start') || null, assignment_end: get('assignment_end') || null, sales_owner: get('sales_owner'), note: get('note') };
 }
 const statusOf = (m) => m.type === 'project' ? 'auto' : reports[m.name]?.submitted && reports[m.name]?.week === CURRENT_WEEK.start ? 'done' : 'pending';
-const save = () => { localStorage.setItem('workweek-state', JSON.stringify({ members, reports, ui: { page: state.page, memberFilter: state.memberFilter, historyMemberFilter: state.historyMemberFilter, historyYearFilter: state.historyYearFilter } })); };
+const save = () => { localStorage.setItem('workweek-state', JSON.stringify({ members, reports, ui: { page: state.page, memberFilter: state.memberFilter, historyMemberFilter: state.historyMemberFilter, historyYearFilter: state.historyYearFilter, historyMonthFilter: state.historyMonthFilter } })); };
 const fmtDate = (iso) => { const [y, m, d] = iso.split('-'); return `${y}.${m}.${d}`; };
 const avatarClass = (index) => ['avatar-blue', 'avatar-green', 'avatar-amber', 'avatar-purple', 'avatar-rose'][index % 5];
 const badge = (type) => type === 'done' ? '<span class="badge badge-success">제출 완료</span>' : type === 'auto' ? '<span class="badge badge-auto">자동 반영</span>' : '<span class="badge badge-pending">작성 대기</span>';
@@ -257,7 +266,7 @@ function dashboard() {
     const nextPlan = [report.nextCategory, report.nextProject, report.nextClient, report.nextNote].filter(Boolean).join(' · ');
     const submitted = report.submitted && report.week === CURRENT_WEEK.start;
     return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '나의 주간업무와 제출 상태를 확인해 보세요.')}
-      <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">MY WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>${me?.type === 'office' ? (submitted ? '이번 주 보고를 제출했어요' : '이번 주 보고를 작성해 주세요') : '프로젝트 근무 중입니다'}</h2><p>${me?.type === 'office' ? '주간보고 내용은 제출 후 팀장이 취합합니다.' : '프로젝트 근무자는 팀장이 전주 내용을 반영합니다'}</p></div>${me?.type === 'office' ? '<button class="banner-cta" data-page="history">과거 보고서 보기 <span>→</span></button>' : '<button class="banner-cta" data-page="team">근무 정보 보기 <span>→</span></button>'}</section>
+      <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">MY WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>${me?.type === 'office' ? (submitted ? '이번 주 보고를 제출했어요' : '이번 주 보고를 작성해 주세요') : '프로젝트 근무 중입니다'}</h2><p>${me?.type === 'office' ? '주간보고 내용은 제출 후 팀장이 취합합니다.' : '프로젝트 근무자는 팀장이 전주 내용을 반영합니다'}</p></div>${me?.type === 'office' ? '<div class="member-dashboard-actions"><button class="banner-cta" data-page="history">과거 보고서 보기 <span>→</span></button><button class="banner-cta banner-cta-secondary" data-page="report">금주 주간보고 작성 <span>→</span></button></div>' : '<button class="banner-cta" data-page="team">근무 정보 보기 <span>→</span></button>'}</section>
       <section class="stats-grid"><article class="stat-card"><div class="stat-head">내 제출 상태<span class="stat-icon ${submitted ? 'icon-green' : 'icon-amber'}">${submitted ? '✓' : '◷'}</span></div><div class="stat-value" style="font-size:22px">${me?.type === 'project' ? '자동 반영' : submitted ? '제출 완료' : '작성 대기'}</div><div class="stat-note">${me?.type === 'office' ? (report.time ? `${report.time} 제출` : '목요일 오전 11시 마감') : '팀장이 주간보고에 반영합니다'}</div></article><article class="stat-card"><div class="stat-head">이번 주 보고 기간<span class="stat-icon icon-blue">▦</span></div><div class="stat-value" style="font-size:18px">${CURRENT_WEEK.label}</div><div class="stat-note">월요일부터 금요일까지</div></article></section>
       <article class="panel"><div class="panel-header"><div><h3>내 주간업무</h3><p class="panel-subtitle">이 화면에서는 본인 보고만 확인할 수 있습니다.</p>${me?.type === 'project' ? `<div class="assignment-summary"><span>고객사<strong>${escapeHtml(assignment.client || '—')}</strong></span><span>프로젝트명<strong>${escapeHtml(assignment.project || '—')}</strong></span><span>투입일자<strong>${assignment.start ? fmtDate(assignment.start) : '—'}</strong></span><span>철수일자<strong>${assignment.end ? fmtDate(assignment.end) : '—'}</strong></span></div>` : ''}</div>${me?.type === 'office' ? '<button class="text-link" data-page="report">보고서 작성 →</button>' : ''}</div>${me?.type === 'office' ? `<div class="office-work-summary">${report.category || report.project || report.client ? workLines.map(([label, value]) => `<div class="weekly-work-line"><span>${label}</span><strong>${escapeHtml(value || '—')}</strong></div>`).join('') : '<div class="empty-state">아직 제출한 보고가 없습니다.</div>'}${nextPlan ? `<small class="next-plan-line">차주 계획: ${escapeHtml(nextPlan)}</small>` : ''}</div>` : `<div class="activity-item"><div><small class="project-work-detail">${escapeHtml(report.task || '프로젝트 근무는 팀장이 전주 내용을 반영합니다.')}</small></div></div>`}</article>`;
   }
@@ -280,19 +289,35 @@ function historyPage() {
   if (historyLoading) return `${heading('REPORT ARCHIVE', '과거 보고서', '주차별로 저장된 주간업무 보고 내용을 확인합니다.')}<div class="panel"><div class="empty-state">과거 보고서를 불러오는 중입니다.</div></div>`;
   if (historyError) return `${heading('REPORT ARCHIVE', '과거 보고서', '주차별로 저장된 주간업무 보고 내용을 확인합니다.')}<div class="panel"><div class="empty-state">${escapeHtml(historyError)}<br /><button class="button button-primary" data-action="refresh-history" style="margin-top:12px">다시 불러오기</button></div></div>`;
   const years = [...new Set(reportHistory.map((report) => report.week?.slice(0, 4)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
-  const availableMembers = [...new Set(reportHistory.map((report) => report.memberName))].sort((a, b) => a.localeCompare(b, 'ko'));
+  const availableMembers = sortMembersForDirectory([...new Map(reportHistory.map((report) => [report.memberName, members.find((member) => member.name === report.memberName) || { name: report.memberName }])).values()]).map((member) => member.name);
+  const months = [...new Set(reportHistory.filter((report) => state.historyYearFilter === 'all' || report.week?.startsWith(state.historyYearFilter)).map((report) => report.week?.slice(5, 7)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
   if (state.historyYearFilter !== 'all' && !years.includes(state.historyYearFilter)) state.historyYearFilter = 'all';
   if (isManager() && state.historyMemberFilter !== 'all' && !availableMembers.includes(state.historyMemberFilter)) state.historyMemberFilter = 'all';
+  if (state.historyMonthFilter !== 'all' && !months.includes(state.historyMonthFilter)) state.historyMonthFilter = 'all';
   const filtered = reportHistory.filter((report) => (state.historyYearFilter === 'all' || report.week?.startsWith(state.historyYearFilter))
+    && (state.historyMonthFilter === 'all' || report.week?.slice(5, 7) === state.historyMonthFilter)
     && (!isManager() || state.historyMemberFilter === 'all' || report.memberName === state.historyMemberFilter));
-  const filters = `<div class="toolbar history-toolbar"><div class="history-filters"><label class="history-filter"><span>연도</span><select class="select-input" id="historyYearFilter"><option value="all">전체 기간</option>${years.map((year) => `<option value="${escapeHtml(year)}" ${state.historyYearFilter === year ? 'selected' : ''}>${escapeHtml(year)}년</option>`).join('')}</select></label>${isManager() ? `<label class="history-filter"><span>팀원</span><select class="select-input" id="historyMemberFilter"><option value="all">전체 팀원</option>${availableMembers.map((name) => `<option value="${escapeHtml(name)}" ${state.historyMemberFilter === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></label>` : ''}</div><button class="button" data-action="refresh-history">새로고침</button></div>`;
-  const cards = filtered.map((report) => {
+  const filters = `<div class="toolbar history-toolbar"><div class="history-filters"><label class="history-filter"><span>연도</span><select class="select-input" id="historyYearFilter"><option value="all">전체 연도</option>${years.map((year) => `<option value="${escapeHtml(year)}" ${state.historyYearFilter === year ? 'selected' : ''}>${escapeHtml(year)}년</option>`).join('')}</select></label><label class="history-filter"><span>월</span><select class="select-input" id="historyMonthFilter"><option value="all">전체 월</option>${months.map((month) => `<option value="${escapeHtml(month)}" ${state.historyMonthFilter === month ? 'selected' : ''}>${Number(month)}월</option>`).join('')}</select></label>${isManager() ? `<label class="history-filter"><span>팀원</span><select class="select-input" id="historyMemberFilter"><option value="all">전체 팀원</option>${availableMembers.map((name) => `<option value="${escapeHtml(name)}" ${state.historyMemberFilter === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></label>` : ''}</div><button class="button" data-action="refresh-history">새로고침</button></div>`;
+  const entries = filtered.map((report) => {
     const end = report.weekEnd || (() => { const date = new Date(`${report.week}T00:00:00`); date.setDate(date.getDate() + 4); return toLocalISO(date); })();
     const fields = [['업무구분', report.category], ['프로젝트명', report.project], ['고객사', report.client], ['투입기간', report.start || report.end ? `${report.start ? fmtDate(report.start) : '—'} ~ ${report.end ? fmtDate(report.end) : '—'}` : '—'], ['담당영업', report.salesOwner], ['기타', report.note]];
     const nextPlan = [['업무구분', report.nextCategory], ['프로젝트명', report.nextProject], ['고객사', report.nextClient], ['기타', report.nextNote]].filter(([,value]) => value).map(([label, value]) => `${label}: ${escapeHtml(value)}`).join(' · ');
-    return `<article class="history-card"><div class="history-card-header"><div><strong>${fmtDate(report.week)} — ${fmtDate(end)}</strong>${isManager() ? `<small>${escapeHtml(report.memberName)} · ${escapeHtml(report.role)} ${escapeHtml(report.job)}</small>` : ''}</div><span class="badge ${report.submitted ? 'badge-success' : 'badge-pending'}">${report.submitted ? '제출 완료' : '미제출'}</span></div><div class="history-report-grid">${fields.map(([label, value]) => `<div class="history-report-item ${label === '기타' ? 'history-report-wide' : ''}"><span>${label}</span><strong>${escapeHtml(value || '—')}</strong></div>`).join('')}</div>${nextPlan ? `<div class="history-next-plan"><span>차주 계획</span><p>${nextPlan}</p></div>` : ''}<div class="history-report-meta">${report.submittedAt ? `제출 ${new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(report.submittedAt))}` : '제출 시각 정보 없음'}${report.workTypeAtSubmission ? ` · ${report.workTypeAtSubmission === 'project' ? '프로젝트 근무' : '본사 근무'}` : ''}</div></article>`;
-  }).join('');
-  return `${heading('REPORT ARCHIVE', '과거 보고서', isManager() ? '팀 전체 보고서를 연도와 팀원별로 확인합니다.' : '본인이 작성한 보고서를 주차별로 확인합니다.')} ${filters}<div class="history-list">${cards || '<div class="panel"><div class="empty-state">조건에 맞는 과거 보고서가 없습니다.</div></div>'}</div>`;
+    const reportDate = new Date(`${report.week}T00:00:00`);
+    const monthFirstDay = new Date(reportDate.getFullYear(), reportDate.getMonth(), 1);
+    const firstWeekOffset = (monthFirstDay.getDay() + 6) % 7;
+    const weekOfMonth = Math.ceil((reportDate.getDate() + firstWeekOffset) / 7);
+    return { report, end, fields, nextPlan, weekOfMonth };
+  });
+  const grouped = new Map();
+  entries.forEach(({ report, end, fields, nextPlan, weekOfMonth }) => {
+    const year = report.week.slice(0, 4), month = report.week.slice(5, 7), key = `${year}-${month}`;
+    if (!grouped.has(key)) grouped.set(key, { year, month, rows: [] });
+    const submittedAt = report.submittedAt ? new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(report.submittedAt)) : '제출 시각 정보 없음';
+    const workType = report.workTypeAtSubmission ? (report.workTypeAtSubmission === 'project' ? '프로젝트 근무' : '본사 근무') : '';
+    grouped.get(key).rows.push(`<article class="history-row"><div class="history-row-main"><strong>${Number(month)}월 ${weekOfMonth}주차 <span>${fmtDate(report.week)} — ${fmtDate(end)}</span></strong>${isManager() ? `<span class="history-row-member">${escapeHtml(report.memberName)} · ${escapeHtml(report.role)} ${escapeHtml(report.job)}</span>` : ''}<span class="badge ${report.submitted ? 'badge-success' : 'badge-pending'}">${report.submitted ? '제출 완료' : '미제출'}</span></div><div class="history-row-details">${fields.map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value || '—')}</strong></div>`).join('')}${nextPlan ? `<div class="history-next-plan"><span>차주 계획</span><p>${nextPlan}</p></div>` : ''}</div><div class="history-row-meta">${escapeHtml(submittedAt)}${workType ? ` · ${workType}` : ''}</div></article>`);
+  });
+  const list = [...grouped.values()].sort((a, b) => b.year.localeCompare(a.year) || b.month.localeCompare(a.month)).map(({ year, month, rows }) => `<section class="history-month"><h2>${year}년 <span>${Number(month)}월</span></h2><div class="history-list">${rows.join('')}</div></section>`).join('');
+  return `${heading('REPORT ARCHIVE', '과거 보고서', isManager() ? '연도와 월별로 나누어 주차별 보고 내용을 확인합니다.' : '연도와 월별로 본인의 주간 보고를 확인합니다.')} ${filters}<div class="history-list">${list || '<div class="panel"><div class="empty-state">조건에 맞는 과거 보고서가 없습니다.</div></div>'}</div>`;
 }
 function managerReportPage() {
   const rows = projectStaff().map((member, index) => {
@@ -303,7 +328,7 @@ function managerReportPage() {
 }
 function teamPage() {
   const manager = isManager();
-  let list = members.filter((m) => m.active);
+  let list = sortMembersForDirectory(members.filter((m) => m.active));
   if (state.memberFilter === 'office' || state.memberFilter === 'project') list = list.filter((m) => m.type === state.memberFilter);
   if (state.query) list = list.filter((m) => { const a = assignmentOf(m); return `${m.name} ${m.role} ${a.client} ${a.project}`.toLowerCase().includes(state.query.toLowerCase()); });
   const rows = list.map((m, i) => { const a = assignmentOf(m); return `<tr><td><div class="table-person"><span class="avatar mini-avatar ${avatarClass(i)}">${initials(m.name)}</span><div><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.role)} · ${escapeHtml(m.job)}${m.position === '팀장' ? ' · 팀장' : ''}</small></div></div></td><td>${m.type === 'office' ? '<span class="badge badge-neutral">본사 근무</span>' : '<span class="badge badge-auto">프로젝트</span>'}</td><td>${escapeHtml(a.client || '—')}</td><td>${escapeHtml(a.project || '본사 근무 및 교육')}</td><td>${a.start ? fmtDate(a.start) : '—'}</td><td>${a.end ? fmtDate(a.end) : '—'}</td>${manager ? `<td><button class="text-link" data-action="change-member" data-name="${escapeHtml(m.name)}">상태 변경</button></td>` : ''}</tr>`; }).join('');
@@ -350,7 +375,7 @@ function render() {
     $('#crumbTitle').textContent = '이름 로그인';
     $('#currentProfile').innerHTML = '<span class="avatar avatar-blue">?</span><div><strong>로그인 전</strong><small>이름을 선택해 주세요</small></div>';
     $('#topbarAvatar').textContent = '?'; $('#topbarUserName').textContent = '로그인 전'; $('#topbarUser').title = '로그인 전';
-    $('#pageContent').innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><div class="eyebrow" style="margin-top:20px">SI사업2팀 · WEEKLY REPORT</div><h1>로그인해 주세요</h1><p>팀원 이름과 배부받은 초기 비밀번호를 입력해 업무공간에 입장합니다.</p><form id="nameLoginForm"><label class="form-label" for="nameLoginSelect">팀원 이름</label><select class="select-input" id="nameLoginSelect" required><option value="">이름 선택</option>${members.filter((m) => m.active).map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${m.position === '팀장' ? '팀장' : m.type === 'office' ? '본사' : '프로젝트'}</option>`).join('')}</select><label class="form-label login-password-label" for="loginPassword">초기 비밀번호</label><input class="text-input" id="loginPassword" type="password" autocomplete="current-password" required placeholder="초기 비밀번호" /><button class="button button-primary" style="width:100%;margin-top:13px" type="submit">로그인 <span>→</span></button></form><small class="login-note">로그인 계정은 Supabase Auth로 확인됩니다. 비밀번호를 팀원과 공유하지 마세요.</small></div></div>`;
+    $('#pageContent').innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">W</div><div class="eyebrow" style="margin-top:20px">SI사업2팀 · WEEKLY REPORT</div><h1>로그인해 주세요</h1><p>팀원 이름과 배부받은 초기 비밀번호를 입력해 업무공간에 입장합니다.</p><form id="nameLoginForm"><label class="form-label" for="nameLoginSelect">팀원 이름</label><select class="select-input" id="nameLoginSelect" required><option value="">이름 선택</option>${sortMembersForDirectory(members.filter((m) => m.active)).map((m) => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ${m.position === '팀장' ? '팀장' : m.type === 'office' ? '본사' : '프로젝트'}</option>`).join('')}</select><label class="form-label login-password-label" for="loginPassword">초기 비밀번호</label><input class="text-input" id="loginPassword" type="password" autocomplete="current-password" required placeholder="초기 비밀번호" /><button class="button button-primary" style="width:100%;margin-top:13px" type="submit">로그인 <span>→</span></button></form><small class="login-note">로그인 계정은 Supabase Auth로 확인됩니다. 비밀번호를 팀원과 공유하지 마세요.</small></div></div>`;
     return;
   }
   $('#sidebar').classList.remove('login-locked');
@@ -681,7 +706,8 @@ document.addEventListener('input', (event) => {
 document.addEventListener('change', (event) => {
   if (event.target.id === 'pushToggle' && event.target.checked && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission().then((p) => { if (p !== 'granted') { event.target.checked = false; toast('브라우저 알림 권한을 허용해 주세요.'); } });
   if (event.target.id === 'notifyTime') localStorage.setItem('workweek-time', event.target.value);
-  if (event.target.id === 'historyYearFilter') { state.historyYearFilter = event.target.value; save(); render(); }
+  if (event.target.id === 'historyYearFilter') { state.historyYearFilter = event.target.value; state.historyMonthFilter = 'all'; save(); render(); }
+  if (event.target.id === 'historyMonthFilter') { state.historyMonthFilter = event.target.value; save(); render(); }
   if (event.target.id === 'historyMemberFilter') { state.historyMemberFilter = event.target.value; save(); render(); }
 });
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('/sw.js').catch(() => {});
