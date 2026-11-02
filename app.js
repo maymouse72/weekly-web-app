@@ -8,13 +8,13 @@ const currentDate = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: '
 const CURRENT_WEEK = { start: toLocalISO(weekStart), end: toLocalISO(weekEnd), label: `${weekStart.getMonth() + 1}월 ${weekStart.getDate()}일 — ${weekEnd.getMonth() + 1}월 ${weekEnd.getDate()}일` };
 const deadlineDate = `${weekThursday.getMonth() + 1}월 ${weekThursday.getDate()}일 (목) 오전 11:00`;
 const WORK_CATEGORIES = ['본사 근무 및 교육', '제안', '사업지원', '수행'];
-const MEMBER_ROLE_ORDER = ['전문위원', '수석', '책임', '선임', '전임', '주임', '사원'];
+const MEMBER_ROLE_ORDER = ['사원', '주임', '전임', '선임', '책임', '수석', '전문위원'];
 function sortMembersForDirectory(list) {
   return [...list].sort((a, b) => {
     if (Boolean(a.isAdmin || a.position === '팀장') !== Boolean(b.isAdmin || b.position === '팀장')) return a.isAdmin || a.position === '팀장' ? -1 : 1;
     const rankDiff = MEMBER_ROLE_ORDER.indexOf(a.role) - MEMBER_ROLE_ORDER.indexOf(b.role);
     if (rankDiff && MEMBER_ROLE_ORDER.includes(a.role) && MEMBER_ROLE_ORDER.includes(b.role)) return rankDiff;
-    return String(b.name || '').localeCompare(String(a.name || ''), 'ko');
+    return String(a.name || '').localeCompare(String(b.name || ''), 'ko');
   });
 }
 let installPromptEvent = null;
