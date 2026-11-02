@@ -55,13 +55,18 @@ let members = saved.members
   : names.map((m) => ({ ...m, position: m.position || '팀원', active: true }));
 let reports = saved.reports || Object.fromEntries(Object.entries(sampleReports).map(([name, data]) => [name, { ...data, submitted: true, week: CURRENT_WEEK.start }]));
 let previousReports = {};
+let reportHistory = [];
+let historyLoaded = false;
+let historyLoading = false;
+let historyError = '';
+let historyRequestId = 0;
 let supabaseConfig = null;
 let authSession = JSON.parse(localStorage.getItem('workweek-auth-session') || 'null');
 let connectionError = '';
 const localPreview = ['localhost', '127.0.0.1'].includes(location.hostname);
 let dataLoading = !localPreview;
-let state = { page: 'dashboard', memberFilter: 'all', query: '', currentMemberName: localStorage.getItem('workweek-current-member') || '', ...(saved.ui || {}) };
-const pageTitles = { dashboard: '대시보드', report: '주간보고 작성', team: '팀 현황', admin: '취합 및 내보내기', settings: '알림 설정' };
+let state = { page: 'dashboard', memberFilter: 'all', query: '', historyMemberFilter: 'all', historyYearFilter: 'all', currentMemberName: localStorage.getItem('workweek-current-member') || '', ...(saved.ui || {}) };
+const pageTitles = { dashboard: '대시보드', report: '주간보고 작성', history: '과거 보고서', team: '팀 현황', admin: '취합 및 내보내기', settings: '알림 설정' };
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
 const escapeHtml = (v = '') => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -71,6 +76,7 @@ async function dbRequest(table, query = '', options = {}) {
   const send = () => {
     const headers = { apikey: supabaseConfig.publishableKey, Authorization: `Bearer ${authSession?.access_token || supabaseConfig.publishableKey}`, 'Content-Type': 'application/json' };
     if (options.prefer) headers.Prefer = options.prefer;
+    if (options.range) { headers['Range-Unit'] = 'items'; headers.Range = options.range; }
     return fetch(url, { method: options.method || 'GET', headers, body: options.body ? JSON.stringify(options.body) : undefined });
   };
   let response = await send();
@@ -100,7 +106,8 @@ function mapReport(row) {
   return { id: row.id, task: row.task_content || '', next: row.next_week_plan || '', leave: row.leave_note || '',
     category: row.work_category || '', project: row.project_name || '', client: row.project_client || '', start: row.assignment_start || '', end: row.assignment_end || '', salesOwner: row.sales_owner || '', note: row.note || '',
     nextCategory: row.next_work_category || '', nextProject: row.next_project_name || '', nextClient: row.next_project_client || '', nextStart: row.next_assignment_start || '', nextEnd: row.next_assignment_end || '', nextSalesOwner: row.next_sales_owner || '', nextNote: row.next_note || '',
-    submitted: row.submitted, week: row.week_start,
+    submitted: row.submitted, week: row.week_start, weekEnd: row.week_end || '', memberId: row.member_id,
+    workTypeAtSubmission: row.work_type_at_submission || '', writtenBy: row.written_by || '', submittedAt: row.submitted_at || '',
     time: row.submitted_at ? new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(row.submitted_at)) : '' };
 }
 async function initializeRemoteData() {
@@ -109,12 +116,12 @@ async function initializeRemoteData() {
     const configResponse = await fetch('/api/config', { cache: 'no-store' });
     if (!configResponse.ok) throw new Error('Vercel 환경 변수 또는 API 설정을 확인해 주세요.');
     supabaseConfig = await configResponse.json();
-    const memberQuery = new URLSearchParams({ select: '*', status: 'eq.ACTIVE', order: 'name.asc' });
+    const memberQuery = new URLSearchParams({ select: '*', order: 'name.asc' });
     const memberRows = await dbRequest('members', memberQuery.toString());
     members = memberRows.map(mapMember);
     if (authSession?.access_token) {
       const user = await fetchAuthUser(authSession.access_token);
-      const member = members.find((item) => user.email === loginEmail(item.name));
+      const member = members.find((item) => item.active && user.email === loginEmail(item.name));
       if (!member) throw new Error('로그인 계정과 팀원 명단이 일치하지 않습니다.');
       state.currentMemberName = member.name;
       localStorage.setItem('workweek-current-member', member.name);
@@ -124,6 +131,7 @@ async function initializeRemoteData() {
       state.currentMemberName = '';
       localStorage.removeItem('workweek-current-member');
       reports = {}; previousReports = {};
+      reportHistory = []; historyLoaded = false;
     }
     connectionError = ''; dataLoading = false;
     save(); render();
@@ -135,6 +143,7 @@ async function initializeRemoteData() {
       authSession = null; localStorage.removeItem('workweek-auth-session');
       state.currentMemberName = ''; localStorage.removeItem('workweek-current-member');
       reports = {}; previousReports = {};
+      reportHistory = []; historyLoaded = false;
       connectionError = ''; render();
       return;
     }
@@ -164,6 +173,32 @@ async function loadReports() {
     else previousReports[name] = report;
   });
 }
+async function loadReportHistory() {
+  const member = currentMember();
+  if (!member) throw new Error('로그인 정보를 확인해 주세요.');
+  if (!supabaseConfig && localPreview) {
+    const membersByName = new Map(members.map((item) => [item.name, item]));
+    reportHistory = Object.entries(isManager() ? reports : { [member.name]: reports[member.name] }).filter(([, report]) => Boolean(report))
+      .map(([name, report]) => ({ ...report, week: report.week || CURRENT_WEEK.start, memberName: name, role: membersByName.get(name)?.role || '', job: membersByName.get(name)?.job || '', submittedAt: report.submittedAt || '' }))
+      .sort((a, b) => b.week.localeCompare(a.week));
+    return;
+  }
+  const query = new URLSearchParams({ select: '*', order: 'week_start.desc,submitted_at.desc.nullslast' });
+  if (!isManager()) query.set('member_id', `eq.${member.id}`);
+  const pageSize = 500;
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    const page = await dbRequest('weekly_reports', query.toString(), { range: `${from}-${from + pageSize - 1}` });
+    if (!Array.isArray(page)) throw new Error('보고서 조회 응답을 확인할 수 없습니다.');
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  const membersById = new Map(members.map((item) => [item.id, item]));
+  reportHistory = rows.map((row) => {
+    const reportMember = membersById.get(row.member_id);
+    return { ...mapReport(row), memberName: reportMember?.name || '명단에서 찾을 수 없는 팀원', role: reportMember?.role || '', job: reportMember?.job || '' };
+  });
+}
 const initials = (name) => name.slice(-1);
 const office = () => members.filter((m) => m.active && m.type === 'office');
 const projectStaff = () => members.filter((m) => m.active && m.type === 'project');
@@ -185,7 +220,7 @@ function reportFieldsFromForm(form, scope) {
   return { work_category: get('work_category'), project_name: get('project_name'), project_client: get('project_client'), assignment_start: get('assignment_start') || null, assignment_end: get('assignment_end') || null, sales_owner: get('sales_owner'), note: get('note') };
 }
 const statusOf = (m) => m.type === 'project' ? 'auto' : reports[m.name]?.submitted && reports[m.name]?.week === CURRENT_WEEK.start ? 'done' : 'pending';
-const save = () => { localStorage.setItem('workweek-state', JSON.stringify({ members, reports, ui: { page: state.page, memberFilter: state.memberFilter } })); };
+const save = () => { localStorage.setItem('workweek-state', JSON.stringify({ members, reports, ui: { page: state.page, memberFilter: state.memberFilter, historyMemberFilter: state.historyMemberFilter, historyYearFilter: state.historyYearFilter } })); };
 const fmtDate = (iso) => { const [y, m, d] = iso.split('-'); return `${y}.${m}.${d}`; };
 const avatarClass = (index) => ['avatar-blue', 'avatar-green', 'avatar-amber', 'avatar-purple', 'avatar-rose'][index % 5];
 const badge = (type) => type === 'done' ? '<span class="badge badge-success">제출 완료</span>' : type === 'auto' ? '<span class="badge badge-auto">자동 반영</span>' : '<span class="badge badge-pending">작성 대기</span>';
@@ -222,13 +257,13 @@ function dashboard() {
     const nextPlan = [report.nextCategory, report.nextProject, report.nextClient, report.nextNote].filter(Boolean).join(' · ');
     const submitted = report.submitted && report.week === CURRENT_WEEK.start;
     return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '나의 주간업무와 제출 상태를 확인해 보세요.')}
-      <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">MY WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>${me?.type === 'office' ? (submitted ? '이번 주 보고를 제출했어요' : '이번 주 보고를 작성해 주세요') : '프로젝트 근무 중입니다'}</h2><p>${me?.type === 'office' ? '주간보고 내용은 제출 후 팀장이 취합합니다.' : '프로젝트 근무자는 팀장이 전주 내용을 반영합니다'}</p></div><button class="banner-cta" data-page="report">${me?.type === 'office' ? '내 보고서 보기' : '근무 정보 보기'} <span>→</span></button></section>
+      <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">MY WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>${me?.type === 'office' ? (submitted ? '이번 주 보고를 제출했어요' : '이번 주 보고를 작성해 주세요') : '프로젝트 근무 중입니다'}</h2><p>${me?.type === 'office' ? '주간보고 내용은 제출 후 팀장이 취합합니다.' : '프로젝트 근무자는 팀장이 전주 내용을 반영합니다'}</p></div>${me?.type === 'office' ? '<button class="banner-cta" data-page="history">과거 보고서 보기 <span>→</span></button>' : '<button class="banner-cta" data-page="team">근무 정보 보기 <span>→</span></button>'}</section>
       <section class="stats-grid"><article class="stat-card"><div class="stat-head">내 제출 상태<span class="stat-icon ${submitted ? 'icon-green' : 'icon-amber'}">${submitted ? '✓' : '◷'}</span></div><div class="stat-value" style="font-size:22px">${me?.type === 'project' ? '자동 반영' : submitted ? '제출 완료' : '작성 대기'}</div><div class="stat-note">${me?.type === 'office' ? (report.time ? `${report.time} 제출` : '목요일 오전 11시 마감') : '팀장이 주간보고에 반영합니다'}</div></article><article class="stat-card"><div class="stat-head">이번 주 보고 기간<span class="stat-icon icon-blue">▦</span></div><div class="stat-value" style="font-size:18px">${CURRENT_WEEK.label}</div><div class="stat-note">월요일부터 금요일까지</div></article></section>
       <article class="panel"><div class="panel-header"><div><h3>내 주간업무</h3><p class="panel-subtitle">이 화면에서는 본인 보고만 확인할 수 있습니다.</p>${me?.type === 'project' ? `<div class="assignment-summary"><span>고객사<strong>${escapeHtml(assignment.client || '—')}</strong></span><span>프로젝트명<strong>${escapeHtml(assignment.project || '—')}</strong></span><span>투입일자<strong>${assignment.start ? fmtDate(assignment.start) : '—'}</strong></span><span>철수일자<strong>${assignment.end ? fmtDate(assignment.end) : '—'}</strong></span></div>` : ''}</div>${me?.type === 'office' ? '<button class="text-link" data-page="report">보고서 작성 →</button>' : ''}</div>${me?.type === 'office' ? `<div class="office-work-summary">${report.category || report.project || report.client ? workLines.map(([label, value]) => `<div class="weekly-work-line"><span>${label}</span><strong>${escapeHtml(value || '—')}</strong></div>`).join('') : '<div class="empty-state">아직 제출한 보고가 없습니다.</div>'}${nextPlan ? `<small class="next-plan-line">차주 계획: ${escapeHtml(nextPlan)}</small>` : ''}</div>` : `<div class="activity-item"><div><small class="project-work-detail">${escapeHtml(report.task || '프로젝트 근무는 팀장이 전주 내용을 반영합니다.')}</small></div></div>`}</article>`;
   }
   const done = office().filter((m) => statusOf(m) === 'done').length;
   const pending = office().length - done;
-  return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '이번 주 팀 보고를 확인하고 프로젝트 근무자 보고를 작성해 주세요.', '<button class="button" data-action="go-team">팀원 현황</button>')}
+  return `${heading(currentDate, `좋은 아침이에요, ${escapeHtml(me?.name || '팀원')}님 👋`, '이번 주 팀 보고를 확인하고 프로젝트 근무자 보고를 작성해 주세요.', '<button class="button" data-page="history">과거 보고서 보기</button><button class="button" data-action="go-team">팀원 현황</button>')}
     <section class="dashboard-banner"><div class="banner-copy"><div class="banner-kicker">WEEKLY REPORT · ${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}</div><h2>이번 주 보고, 목요일 오전 11시까지</h2><p>프로젝트 근무자 보고를 입력하고 상사 보고용 취합본을 준비해 주세요.</p></div><button class="banner-cta" data-page="report">보고서 작성하기 <span>→</span></button></section>
     <section class="stats-grid"><article class="stat-card"><div class="stat-head">팀 전체 인원<span class="stat-icon icon-blue">♧</span></div><div class="stat-value">${members.filter((m) => m.active).length}<small> 명</small></div><div class="stat-note">본사 ${office().length}명 · 프로젝트 ${projectStaff().length}명</div></article><article class="stat-card"><div class="stat-head">본사 보고 제출<span class="stat-icon icon-green">✓</span></div><div class="stat-value">${done}<small> / ${office().length}</small></div><div class="stat-note">목요일 오전 11시 마감</div></article><article class="stat-card"><div class="stat-head">작성 대기<span class="stat-icon icon-amber">◷</span></div><div class="stat-value">${pending}<small> 명</small></div><div class="stat-note">본사 근무자 보고 필요</div></article><article class="stat-card"><div class="stat-head">프로젝트 인력<span class="stat-icon icon-gray">↗</span></div><div class="stat-value">${projectStaff().length}<small> 명</small></div><div class="stat-note">전주 내용 자동 반영</div></article></section>
     <section class="content-grid"><article class="panel"><div class="panel-header"><div><h3>보고 제출 현황</h3><p class="panel-subtitle">본사 근무자는 매주 직접 제출해요</p></div><button class="text-link" data-page="admin">전체 보기 →</button></div><div class="submission-list">${submissionRows()}</div><div class="progress-wrap"><div class="progress-label"><span>제출 진행률</span><strong>${office().length ? Math.round(done / office().length * 100) : 0}%</strong></div><div class="progress-track"><div class="progress-fill" style="width:${office().length ? done / office().length * 100 : 0}%"></div></div></div></article><div class="side-panel"><article class="reminder-card"><div class="reminder-top"><h3>다음 마감 일정</h3><span class="badge badge-pending">오늘 마감</span></div><p>본사 근무자 주간업무 보고 제출 마감입니다.</p><div class="reminder-date"><span>이번 주 보고</span><strong>오늘 오전 11:00</strong></div></article><article class="activity-card"><div class="panel-header"><div><h3>팀 보고 활동</h3><p class="panel-subtitle">이번 주 업데이트</p></div><span class="stat-icon icon-green">↗</span></div>${office().filter((m) => statusOf(m) === 'done').slice(-3).reverse().map((m, i) => `<div class="activity-item"><span class="activity-dot"></span><div><small><strong>${escapeHtml(m.name)}</strong>님이 주간보고를 제출했어요</small><time>${reports[m.name]?.time || '10:32'} · 오늘</time></div></div>`).join('')}</article></div></section>`;
@@ -240,6 +275,24 @@ function reportPage() {
   if (me.type !== 'office') return `${heading('MY WEEKLY REPORT', '주간보고', '프로젝트 근무자는 팀장이 주간보고를 작성합니다.')}`;
   return `${heading('MY WEEKLY REPORT', '주간보고 작성', `${fmtDate(CURRENT_WEEK.start)} — ${fmtDate(CURRENT_WEEK.end)} 주간업무를 입력해 제출해 주세요.`, '<button class="button" data-action="copy-last">↺ 지난주 내용 가져오기</button>')}
     <div class="report-layout"><form class="report-card" id="reportForm"><div class="form-section"><label class="form-label">보고 대상</label><div class="report-meta"><span class="meta-chip">${escapeHtml(me.name)} · ${escapeHtml(me.role)} ${escapeHtml(me.job)}</span><span class="meta-chip">본사 근무</span><span class="meta-chip">보고 기간 ${fmtDate(CURRENT_WEEK.start)} — ${fmtDate(CURRENT_WEEK.end)}</span></div></div><div class="form-section"><div class="form-section-heading"><div><label class="form-label">금주 업무 내용</label><p class="form-help">업무구분을 선택하고 해당 주의 업무 정보를 입력해 주세요.</p></div><button type="button" class="button button-soft" data-action="copy-current-to-next">금주 내용을 차주 계획에 복사</button></div>${structuredFields('current', report, true)}</div><div class="form-section"><label class="form-label">차주 업무 계획</label><p class="form-help">금주 내용을 복사한 뒤 수정하거나 직접 입력할 수 있습니다.</p>${structuredFields('next', { category: report.nextCategory, project: report.nextProject, client: report.nextClient, start: report.nextStart, end: report.nextEnd, salesOwner: report.nextSalesOwner, note: report.nextNote })}</div><div class="form-actions"><span class="save-note">${report.submitted ? `마지막 제출 ${report.time || ''} · 수정 후 다시 제출할 수 있어요.` : '업무구분을 선택한 뒤 보고서를 제출해 주세요.'}</span><button class="button button-primary" type="submit">보고 제출하기 <span>→</span></button></div></form><aside class="report-aside"><article class="aside-card"><h3>제출 전 확인</h3><div class="check-list"><div class="check-item"><span class="check-icon">✓</span>보고 기간이 맞는지 확인</div><div class="check-item"><span class="check-icon">✓</span>업무구분을 선택</div><div class="check-item"><span class="check-icon">✓</span>제출 후에도 수정 가능</div></div></article><article class="aside-card"><h3>지난주 보고 불러오기</h3><div class="aside-tip">지난주 차주 업무 계획을 이번 주 업무 내용으로 가져옵니다. 차주 계획은 직접 입력하거나 금주 내용을 복사할 수 있어요.</div><button class="button button-soft" style="width:100%;margin-top:11px" data-action="copy-last">지난주 내용 가져오기</button></article></aside></div>`;
+}
+function historyPage() {
+  if (historyLoading) return `${heading('REPORT ARCHIVE', '과거 보고서', '주차별로 저장된 주간업무 보고 내용을 확인합니다.')}<div class="panel"><div class="empty-state">과거 보고서를 불러오는 중입니다.</div></div>`;
+  if (historyError) return `${heading('REPORT ARCHIVE', '과거 보고서', '주차별로 저장된 주간업무 보고 내용을 확인합니다.')}<div class="panel"><div class="empty-state">${escapeHtml(historyError)}<br /><button class="button button-primary" data-action="refresh-history" style="margin-top:12px">다시 불러오기</button></div></div>`;
+  const years = [...new Set(reportHistory.map((report) => report.week?.slice(0, 4)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+  const availableMembers = [...new Set(reportHistory.map((report) => report.memberName))].sort((a, b) => a.localeCompare(b, 'ko'));
+  if (state.historyYearFilter !== 'all' && !years.includes(state.historyYearFilter)) state.historyYearFilter = 'all';
+  if (isManager() && state.historyMemberFilter !== 'all' && !availableMembers.includes(state.historyMemberFilter)) state.historyMemberFilter = 'all';
+  const filtered = reportHistory.filter((report) => (state.historyYearFilter === 'all' || report.week?.startsWith(state.historyYearFilter))
+    && (!isManager() || state.historyMemberFilter === 'all' || report.memberName === state.historyMemberFilter));
+  const filters = `<div class="toolbar history-toolbar"><div class="history-filters"><label class="history-filter"><span>연도</span><select class="select-input" id="historyYearFilter"><option value="all">전체 기간</option>${years.map((year) => `<option value="${escapeHtml(year)}" ${state.historyYearFilter === year ? 'selected' : ''}>${escapeHtml(year)}년</option>`).join('')}</select></label>${isManager() ? `<label class="history-filter"><span>팀원</span><select class="select-input" id="historyMemberFilter"><option value="all">전체 팀원</option>${availableMembers.map((name) => `<option value="${escapeHtml(name)}" ${state.historyMemberFilter === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></label>` : ''}</div><button class="button" data-action="refresh-history">새로고침</button></div>`;
+  const cards = filtered.map((report) => {
+    const end = report.weekEnd || (() => { const date = new Date(`${report.week}T00:00:00`); date.setDate(date.getDate() + 4); return toLocalISO(date); })();
+    const fields = [['업무구분', report.category], ['프로젝트명', report.project], ['고객사', report.client], ['투입기간', report.start || report.end ? `${report.start ? fmtDate(report.start) : '—'} ~ ${report.end ? fmtDate(report.end) : '—'}` : '—'], ['담당영업', report.salesOwner], ['기타', report.note]];
+    const nextPlan = [['업무구분', report.nextCategory], ['프로젝트명', report.nextProject], ['고객사', report.nextClient], ['기타', report.nextNote]].filter(([,value]) => value).map(([label, value]) => `${label}: ${escapeHtml(value)}`).join(' · ');
+    return `<article class="history-card"><div class="history-card-header"><div><strong>${fmtDate(report.week)} — ${fmtDate(end)}</strong>${isManager() ? `<small>${escapeHtml(report.memberName)} · ${escapeHtml(report.role)} ${escapeHtml(report.job)}</small>` : ''}</div><span class="badge ${report.submitted ? 'badge-success' : 'badge-pending'}">${report.submitted ? '제출 완료' : '미제출'}</span></div><div class="history-report-grid">${fields.map(([label, value]) => `<div class="history-report-item ${label === '기타' ? 'history-report-wide' : ''}"><span>${label}</span><strong>${escapeHtml(value || '—')}</strong></div>`).join('')}</div>${nextPlan ? `<div class="history-next-plan"><span>차주 계획</span><p>${nextPlan}</p></div>` : ''}<div class="history-report-meta">${report.submittedAt ? `제출 ${new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(report.submittedAt))}` : '제출 시각 정보 없음'}${report.workTypeAtSubmission ? ` · ${report.workTypeAtSubmission === 'project' ? '프로젝트 근무' : '본사 근무'}` : ''}</div></article>`;
+  }).join('');
+  return `${heading('REPORT ARCHIVE', '과거 보고서', isManager() ? '팀 전체 보고서를 연도와 팀원별로 확인합니다.' : '본인이 작성한 보고서를 주차별로 확인합니다.')} ${filters}<div class="history-list">${cards || '<div class="panel"><div class="empty-state">조건에 맞는 과거 보고서가 없습니다.</div></div>'}</div>`;
 }
 function managerReportPage() {
   const rows = projectStaff().map((member, index) => {
@@ -278,6 +331,7 @@ function render() {
   const signedIn = Boolean(currentMember() && (localPreview || authSession?.access_token));
   $$('[data-page="team"]').forEach((el) => { el.hidden = !signedIn; });
   $$('[data-page="admin"]').forEach((el) => { el.hidden = !signedIn || !isManager(); });
+  $$('[data-page="history"]').forEach((el) => { el.hidden = !signedIn; });
   if (dataLoading) {
     $('#sidebar').classList.add('login-locked');
     $('#crumbTitle').textContent = '공유 데이터 연결';
@@ -303,12 +357,21 @@ function render() {
   const manager = isManager();
   $$('[data-page="team"]').forEach((el) => { el.hidden = false; });
   $$('[data-page="admin"]').forEach((el) => { el.hidden = !manager; });
+  $$('[data-page="history"]').forEach((el) => { el.hidden = false; });
   if (!manager && state.page === 'admin') state.page = 'dashboard';
   header(pageTitles[state.page] || '대시보드');
   $('#periodPill').innerHTML = `<span class="status-dot"></span>${fmtDate(CURRENT_WEEK.start)} — ${CURRENT_WEEK.end.slice(5).replace('-', '.')}`;
   $('#deadlineText').textContent = toLocalISO(new Date()) === toLocalISO(weekThursday) ? '오늘 오전 11:00' : deadlineDate;
-  const views = { dashboard, report: reportPage, team: teamPage, admin: adminPage, settings: settingsPage };
+  const shouldLoadHistory = state.page === 'history' && !historyLoaded && !historyLoading && !historyError;
+  if (shouldLoadHistory) historyLoading = true;
+  const views = { dashboard, report: reportPage, history: historyPage, team: teamPage, admin: adminPage, settings: settingsPage };
   $('#pageContent').innerHTML = (views[state.page] || dashboard)();
+  if (shouldLoadHistory) {
+    const requestId = ++historyRequestId;
+    loadReportHistory().then(() => { if (requestId === historyRequestId) historyLoaded = true; })
+      .catch((error) => { if (requestId === historyRequestId) historyError = error.message || '과거 보고서를 불러오지 못했습니다.'; })
+      .finally(() => { if (requestId === historyRequestId) { historyLoading = false; render(); } });
+  }
   const overlay = $('.mobile-overlay'); if (overlay) overlay.remove();
   if ($('#sidebar').classList.contains('open')) { const node = document.createElement('div'); node.className = 'mobile-overlay visible'; node.id = 'mobileOverlay'; document.body.appendChild(node); }
 }
@@ -318,7 +381,12 @@ function go(page) {
   state.page = page;
   if (page !== 'team') state.query = '';
   if (window.innerWidth <= 760) $('#sidebar').classList.remove('open');
+  if (page === 'history') historyError = '';
   save(); render(); window.scrollTo(0, 0);
+}
+function refreshHistory() {
+  historyLoaded = false; historyError = '';
+  render();
 }
 function toast(message) { const node = document.createElement('div'); node.className = 'toast'; node.textContent = message; $('#toastRegion').appendChild(node); setTimeout(() => node.remove(), 3000); }
 async function installApp() {
@@ -386,7 +454,7 @@ async function saveReport(event) {
       if (!Array.isArray(rows) || !rows[0]?.id) throw new Error('저장 응답에 보고서가 없습니다. Supabase 테이블 권한과 저장 결과를 확인해 주세요.');
       Object.assign(report, mapReport(rows[0]));
     }
-    reports[member.name] = report;
+    reports[member.name] = report; historyLoaded = false;
     save(); toast('주간보고를 제출했어요.'); render();
   } catch (error) { console.error('주간보고 저장 실패:', error); toast(`제출하지 못했어요: ${error.message}`); }
 }
@@ -412,6 +480,7 @@ async function saveProjectReport(button) {
       if (!rows?.[0]?.id) throw new Error('저장된 보고서를 확인할 수 없습니다.');
       reports[name] = mapReport(rows[0]);
     } else reports[name] = report;
+    historyLoaded = false;
     save(); render(); toast(`${name}님의 프로젝트 보고를 저장했습니다.`);
   } catch (error) { console.error('프로젝트 보고 저장 실패:', error); toast(`저장하지 못했어요: ${error.message}`); }
 }
@@ -557,6 +626,7 @@ document.addEventListener('click', (event) => {
       authSession = null; localStorage.removeItem('workweek-auth-session');
       state.currentMemberName = '';
       localStorage.removeItem('workweek-current-member');
+      reportHistory = []; historyLoaded = false; historyLoading = false; historyError = ''; historyRequestId++;
       state.page = 'dashboard';
       render();
     }
@@ -565,6 +635,7 @@ document.addEventListener('click', (event) => {
     if (action === 'save-project-report') saveProjectReport(actionButton);
     if (action === 'copy-project-last') copyProjectLastWeek(actionButton);
     if (action === 'export-xlsx') exportXlsx();
+    if (action === 'refresh-history') refreshHistory();
     if (action === 'install-app') installApp().catch((error) => { console.error('앱 설치 안내 실패:', error); toast('브라우저 메뉴에서 “앱 설치” 또는 “홈 화면에 추가”를 선택해 주세요.'); });
     if (action === 'add-member') addMember();
     if (action === 'change-member') changeMember(actionButton.dataset.name);
@@ -588,6 +659,7 @@ document.addEventListener('submit', (event) => {
   if (!member) return toast('팀원 이름을 선택해 주세요.');
   if (!supabaseConfig && localPreview) {
     state.currentMemberName = member.name; localStorage.setItem('workweek-current-member', member.name);
+    reportHistory = []; historyLoaded = false; historyError = ''; historyRequestId++;
     state.page = 'dashboard'; save(); render(); toast('로컬 미리보기: 비밀번호는 확인하지 않습니다.'); return;
   }
   if (!supabaseConfig) return toast('공유 로그인 설정이 연결되지 않았습니다. 배포된 앱에서 다시 시도해 주세요.');
@@ -598,6 +670,7 @@ document.addEventListener('submit', (event) => {
       if (session.user?.email !== loginEmail(member.name)) throw new Error('선택한 이름의 로그인 정보와 일치하지 않습니다.');
       authSession = session; localStorage.setItem('workweek-auth-session', JSON.stringify(session));
       state.currentMemberName = member.name; localStorage.setItem('workweek-current-member', member.name);
+      reportHistory = []; historyLoaded = false; historyError = ''; historyRequestId++;
       await loadReports(); state.page = 'dashboard'; save(); render();
     })
     .catch((error) => { authSession = null; localStorage.removeItem('workweek-auth-session'); state.currentMemberName = ''; localStorage.removeItem('workweek-current-member'); toast(error.message || '로그인하지 못했습니다.'); submit.disabled = false; });
@@ -608,6 +681,8 @@ document.addEventListener('input', (event) => {
 document.addEventListener('change', (event) => {
   if (event.target.id === 'pushToggle' && event.target.checked && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission().then((p) => { if (p !== 'granted') { event.target.checked = false; toast('브라우저 알림 권한을 허용해 주세요.'); } });
   if (event.target.id === 'notifyTime') localStorage.setItem('workweek-time', event.target.value);
+  if (event.target.id === 'historyYearFilter') { state.historyYearFilter = event.target.value; save(); render(); }
+  if (event.target.id === 'historyMemberFilter') { state.historyMemberFilter = event.target.value; save(); render(); }
 });
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('/sw.js').catch(() => {});
 function checkReminder() {
